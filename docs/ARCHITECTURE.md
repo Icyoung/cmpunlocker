@@ -14,9 +14,11 @@ The CMP 170HX ships with:
 
 - **Disabled SMs (Streaming Multiprocessors)**: SS0 and SS1 (Suspension State registers) artificially disable clusters of SMs
 - **Restricted memory geometry**: The HBM2e controller is configured for 8GB or 10GB instead of the full 64GB or 40GB the die supports
+- **PCIe Gen 1 cap**: The link is trained down to Gen 1 speeds instead of the Gen 2 the die supports
+- **JTAG lockout**: Host2Jtag register access is locked behind PLM permissions
 - **Firmware locks**: OTP (One-Time Programmable) fuses prevent reconfiguration at runtime
 
-All three are enforced during GSP (GPU System Processor) boot, which happens when the driver loads.
+All of the above are enforced during GSP (GPU System Processor) boot, which happens when the driver loads.
 
 ---
 
@@ -24,10 +26,11 @@ All three are enforced during GSP (GPU System Processor) boot, which happens whe
 
 Instead of modifying OTP (which is physically locked), cmpunlocker intercepts the driver's boot flow and reconfigures the GPU before OTP locks take effect:
 
-1. **Open the SEC2 Booter PMM** — disable security restrictions on the Booter so it can execute custom PLM sequences
+1. **Open the SEC2 Booter PMM** — disable security restrictions on the Booter so it can execute custom PLM sequences, including the PCIe (XP3G) and JTAG (PJTAG) PLMs
 2. **Configure memory geometry** — write CFG1 (config) and LMR (LM Request) registers to unlock full HBM2e capacity
 3. **Enable all SMs** — write SS0 and SS1 (Suspension State) to re-enable disabled SM clusters
-4. **Finalize** — perform late PMA (Power Management Array) adjustments and allow normal boot to continue
+4. **Retrain the PCIe link** — request and retrain to Gen 2 now that the XP3G PLMs are open
+5. **Finalize** — perform late PMA (Power Management Array) adjustments and allow normal boot to continue
 
 ---
 
@@ -94,17 +97,45 @@ After core reconfiguration, the frame buffer (FB) and power management array (PM
 
 ---
 
+### PCIe Link Speed (Gen 2)
+
+The PCIe link is trained down to Gen 1 by stock firmware. cmpunlocker retrains it to Gen 2:
+
+- Opens the XP3G/XVE/OPTB PLM registers to `0xffffffff`, same pattern as the other PLM unlocks
+- Clears the OPT_GEN23 lock and writes the XP3G override registers to request Gen 2
+- Forces a link retrain against the GPU and its upstream PCIe bridge
+- An early-boot systemd service re-requests Gen 2 on a short retry loop, since the window the driver opens the capability in is brief and can be missed
+
+Expected dmesg output:
+```
+SEC2_DEBUG: PCIe pre  CAP=... STAT=... speed=1
+SEC2_DEBUG: PCIe post CAP=... STAT=... speed=2
+```
+
+---
+
+### JTAG (Host2Jtag)
+
+Host2Jtag register access is locked behind the same class of PLM permission as the Booter and memory controller:
+
+- Stock firmware leaves the PJTAG PLM registers closed, blocking JTAG-based register access
+- cmpunlocker writes `0xffffffff` to the PJTAG PLM registers alongside the rest of the PLM-opening sequence
+- With them open, JTAG access to the GPU works the same as on an unrestricted A100
+
+---
+
 ## Boot Flow
 
 1. **Driver loads** → nvidia-open kernel modules initialize
 2. **GSP power-on** → SEC2 Booter executes (normally-locked path)
 3. **cmpunlocker intercepts** → PMM is opened, custom PLM sequences run
-   - PLMs set to unrestricted mode
+   - PLMs set to unrestricted mode (including XP3G and PJTAG)
    - CFG1/LMR written (memory geometry)
    - SS0/SS1 written (compute state)
+   - PCIe link retrained to Gen 2
    - Late PMA adjustments applied
 4. **GSP boot completes** → GPU is now fully unlocked
-5. **Driver ready** → `nvidia-smi` shows 65536 MiB (8GB) or 40960 MiB (10GB)
+5. **Driver ready** → `nvidia-smi` shows 65536 MiB (8GB) or 40960 MiB (10GB) at PCIe Gen 2, with JTAG register access available
 
 ---
 
