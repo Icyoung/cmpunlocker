@@ -10,11 +10,35 @@ Before you go asking in the Discord for help, here is a FAQ you should take a lo
 
 ---
 
-## nvidia-smi shows 8192 or 10240 MiB (not 65536 or 40960)
+## nvidia-smi shows 8192 or 10240 MiB (not 65536, 40960, or experimental 81920)
 
-- All the PLMs must show `0xffffffff`. Run `sudo dmesg | grep SEC2_DEBUG`to confirm.
+- Confirm each PLM reached its logged target. `WPR_CFG` is expected to be `0xfffff0ff`; the other opened PLMs use `0xffffffff`. Run `sudo dmesg | grep SEC2_DEBUG` to inspect the readback.
 
 - If this still persists, refer to the Discord protocol at the end of the document.
+
+---
+
+## Experimental 80GB reports capacity but workloads fail
+
+- Confirm the compiled profile is `10gb80` or `mixed80`:
+
+  ```bash
+  cat /lib/modules/$(uname -r)/updates/cmpunlocker/card_profile
+  ```
+
+- Confirm coherent register readback is retained in the kernel log:
+
+  ```bash
+  sudo dmesg | grep -iE 'CFG1=0x02779000 LMR=0x0*28b.*2082'
+  ```
+
+- A successful `nvidia-smi` capacity report is not a memory-stability test. Keep
+  the complete Xid/GSP log and return to the stable 40GB profile with:
+
+  ```bash
+  sudo ./install.sh --profile=10gb
+  sudo shutdown -h now
+  ```
 
 ---
 
@@ -37,4 +61,3 @@ If you have tried the above steps and are still having issues, please follow the
    - Your GPU model and driver version
    - The output of `sudo dmesg | grep SEC2_DEBUG`
    - Latest install log (if applicable)
-

@@ -63,11 +63,15 @@ The GPU memory controller is configured by two registers:
 |---|---|---|---|
 | 8GB | `0x02779000` | `0x0000020B` | 64GB |
 | 10GB | `0x02669000` | `0x0000028A` | 40GB |
+| 10GB, explicit experimental profile | `0x02779000` | `0x0000028B` | 80GB target |
 
 - **CFG1**: Memory configuration register (address mapping, bank layout)
 - **LMR**: LM (Local Memory) Request register (capacity/geometry selector)
 
-cmpunlocker writes both during the unlock sequence. Detection of 8GB vs 10GB happens at install time via Python script (reads `nvidia-smi` output).
+cmpunlocker writes both during the unlock sequence. Stable geometry is selected
+at runtime by PCI device ID. The optional `10gb80` build profile rewrites only
+the compiled 2082 constants and framebuffer length after all kernel patches are
+applied; it is never selected automatically.
 
 ---
 
@@ -135,7 +139,7 @@ Host2Jtag register access is locked behind the same class of PLM permission as t
    - PCIe link retrained to Gen 2
    - Late PMA adjustments applied
 4. **GSP boot completes** → GPU is now fully unlocked
-5. **Driver ready** → `nvidia-smi` shows 65536 MiB (8GB) or 40960 MiB (10GB) at PCIe Gen 2, with JTAG register access available
+5. **Driver ready** → `nvidia-smi` shows 65536 MiB (8GB), 40960 MiB (stable 10GB), or the explicitly selected experimental 80GB target at PCIe Gen 2, with JTAG register access available
 
 ---
 
@@ -148,7 +152,9 @@ The unlock is applied by **patched kernel modules**, not a userspace daemon:
 - Every time the driver initializes (on boot or after a reload), the patched sequence runs
 - The unlock persists indefinitely until `./remove.sh` is run
 
-Card profile (8GB vs 10GB) is stored in `/lib/modules/$(uname -r)/updates/cmpunlocker/card_profile` at install time and used during every boot.
+Card profile is stored in `/lib/modules/$(uname -r)/updates/cmpunlocker/card_profile`
+at install time and used during every boot. Experimental builds also write
+`experimental_80gb=1` and retain the per-GPU target in `gpu_inventory`.
 
 ---
 
@@ -158,4 +164,4 @@ Card profile (8GB vs 10GB) is stored in `/lib/modules/$(uname -r)/updates/cmpunl
 - **Requires nvidia-open 610.43.0x** — stock NVIDIA proprietary driver has different boot paths and cannot be patched the same way
 - **Linux only** — GSP boot path is Linux-specific (Windows WDDM driver is fundamentally different)
 - **Kernel headers required** — modules must be compiled for the running kernel version
-
+- **80GB is experimental** — the profile establishes coherent compiled geometry and reported capacity, not long-duration workload stability

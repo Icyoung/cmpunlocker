@@ -42,6 +42,7 @@ version_supported "${VERSION}" || die "Unsupported driver version '${VERSION}' (
 [[ -d "${KSRC}" ]] || die "Kernel headers not found at ${KSRC}. Install linux-headers-${KVER} (or kernel-devel)."
 command -v python3 &>/dev/null || die "python3 is required to apply the card memory profile"
 command -v sha256sum &>/dev/null || die "sha256sum is required"
+[[ -x "${SCRIPT_DIR}/apply_profile.py" ]] || die "Missing executable profile helper: ${SCRIPT_DIR}/apply_profile.py"
 info "Building against open-gpu-kernel-modules ${VERSION}"
 
 PATCH_ORDER=(
@@ -64,36 +65,37 @@ done
 PATCH_HASH="$(cat "${PATCH_FILES[@]}" | sha256sum | cut -d' ' -f1)"
 
 PROFILE="${CMPUNLOCKER_CARD_PROFILE:-8gb}"
-SKIP_GEOMETRY_REWRITE=0
+EXPERIMENTAL_80GB=0
 case "${PROFILE}" in
     8gb|8GB)
         PROFILE="8gb"
-        CFG1="0x02779000"
-        LMR="0x0000020B"
-        FB_BYTES="0x0000001000000000"
         UNLOCK_LABEL="64GB"
         ;;
     10gb|10GB)
         PROFILE="10gb"
-        CFG1="0x02669000"
-        LMR="0x0000028A"
-        FB_BYTES="0x0000000A00000000"
         UNLOCK_LABEL="40GB"
+        ;;
+    10gb80|10GB80|80gb|80GB)
+        PROFILE="10gb80"
+        UNLOCK_LABEL="80GB-experimental"
+        EXPERIMENTAL_80GB=1
         ;;
     mixed|MIXED)
         PROFILE="mixed"
-        CFG1="0x02779000"
-        LMR="0x0000020B"
-        FB_BYTES="0x0000001000000000"
-        UNLOCK_LABEL="mixed"
-        SKIP_GEOMETRY_REWRITE=1
+        UNLOCK_LABEL="20c2=64GB,2082=40GB"
+        ;;
+    mixed80|MIXED80)
+        PROFILE="mixed80"
+        UNLOCK_LABEL="20c2=64GB,2082=80GB-experimental"
+        EXPERIMENTAL_80GB=1
         ;;
     *)
-        die "Unknown CMPUNLOCKER_CARD_PROFILE='${PROFILE}' (use 8gb, 10gb, or mixed)"
+        die "Unknown CMPUNLOCKER_CARD_PROFILE='${PROFILE}' (use 8gb, 10gb, 10gb80, mixed, or mixed80)"
         ;;
 esac
 
-BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:${PATCH_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
+PROFILE_HELPER_HASH="$(sha256sum "${SCRIPT_DIR}/apply_profile.py" | cut -d' ' -f1)"
+BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:${PATCH_HASH}:${PROFILE_HELPER_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
 
 mkdir -p "${BUILD_ROOT}"
 
@@ -133,52 +135,12 @@ else
     GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
     [[ -f "${GSP_C}" ]] || die "Missing ${GSP_C} after patching"
 
-    info "Applying memory profile ${PROFILE} (${UNLOCK_LABEL} geometry)..."
-    if [[ "${SKIP_GEOMETRY_REWRITE}" -eq 1 ]]; then
-        info "mixed profile: runtime device-id geometry (no build-time CFG1/LMR rewrite)"
-    else
-        python3 - "${GSP_C}" "${CFG1}" "${LMR}" "${FB_BYTES}" "${UNLOCK_LABEL}" <<'PY'
-import pathlib, re, sys
-path, cfg1, lmr, fb, label = sys.argv[1:6]
-text = pathlib.Path(path).read_text()
-if (
-    "SEC2_POSTBL_TIMING_CMP_170HX_8GB_PCI_DEVICE_ID" in text
-    and "SEC2_POSTBL_TIMING_CMP_170HX_10GB_PCI_DEVICE_ID" in text
-    and "0x02779000U" in text
-    and "0x02669000U" in text
-    and "0x0000001000000000ULL" in text
-    and "0x0000000A00000000ULL" in text
-):
-    print(f"runtime device-id geometry (profile metadata={label})")
-    raise SystemExit(0)
-
-text2, n1 = re.subn(
-    r"(NvU32 cfg1Value = )0x[0-9A-Fa-f]+(U;)",
-    rf"\g<1>{cfg1}\g<2>",
-    text,
-    count=1,
-)
-text2, n2 = re.subn(
-    r"(NvU32 lmrValue\s*=\s*)0x[0-9A-Fa-f]+(U;)",
-    rf"\g<1>{lmr}\g<2>",
-    text2,
-    count=1,
-)
-text2, n3 = re.subn(
-    r"(NvU64 targetFbBytes = )0x[0-9A-Fa-f]+ULL;\s*/\*[^*]*\*/",
-    rf"\g<1>{fb}ULL;  /* {label} */",
-    text2,
-    count=1,
-)
-if n1 != 1 or n2 != 1 or n3 != 1:
-    raise SystemExit(
-        f"geometry rewrite failed (cfg1={n1} lmr={n2} fb={n3}); check kernel_gsp.c markers"
-    )
-pathlib.Path(path).write_text(text2)
-print(f"cfg1={cfg1} lmr={lmr} fb={fb} ({label})")
-PY
-    fi
+    info "Applying memory profile ${PROFILE} (${UNLOCK_LABEL}) to compiled C constants..."
+    python3 "${SCRIPT_DIR}/apply_profile.py" --source "${GSP_C}" --profile "${PROFILE}"
     ok "Memory profile ${PROFILE}: unlock_geometry=${UNLOCK_LABEL}"
+    if [[ "${EXPERIMENTAL_80GB}" -eq 1 ]]; then
+        warn "10 GB -> 80 GB is experimental; capacity recognition does not prove workload stability"
+    fi
 
     printf '%s\n' "${BUILD_STAMP}" > "${STAMP_FILE}"
 fi
@@ -188,6 +150,7 @@ mkdir -p "${INSTALL_MOD_DIR}"
 printf '%s\n' "${VERSION}" > "${INSTALL_MOD_DIR}/driver_version"
 printf '%s\n' "${PROFILE}" > "${INSTALL_MOD_DIR}/card_profile"
 printf '%s\n' "${UNLOCK_LABEL}" > "${INSTALL_MOD_DIR}/unlock_geometry"
+printf '%s\n' "${EXPERIMENTAL_80GB}" > "${INSTALL_MOD_DIR}/experimental_80gb"
 if [[ -n "${CMPUNLOCKER_GPU_INVENTORY:-}" ]]; then
     printf '%s\n' "${CMPUNLOCKER_GPU_INVENTORY}" > "${INSTALL_MOD_DIR}/gpu_inventory"
     ok "Wrote gpu_inventory ($(echo "${CMPUNLOCKER_GPU_INVENTORY}" | grep -c . || true) GPU(s))"

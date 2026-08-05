@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KVER="$(uname -r)"
 INSTALL_MOD_DIR="/lib/modules/${KVER}/updates/cmpunlocker"
 INVENTORY_FILE="${INSTALL_MOD_DIR}/gpu_inventory"
+INSTALLED_PROFILE="$(cat "${INSTALL_MOD_DIR}/card_profile" 2>/dev/null || true)"
 
 source "${SCRIPT_DIR}/common/lib.sh"
 
@@ -19,6 +20,9 @@ is_unlocked_memory() {
         10gb)
             (( mem_mib >= 35000 && mem_mib < 60000 )) && return 0
             ;;
+        10gb80)
+            (( mem_mib >= 75000 )) && return 0
+            ;;
     esac
     return 1
 }
@@ -32,6 +36,9 @@ is_stock_memory() {
             (( mem_mib >= 7680 && mem_mib <= 8704 )) && return 0
             ;;
         10gb)
+            (( mem_mib >= 9728 && mem_mib <= 10752 )) && return 0
+            ;;
+        10gb80)
             (( mem_mib >= 9728 && mem_mib <= 10752 )) && return 0
             ;;
     esac
@@ -70,6 +77,9 @@ else
         PCI_FULL="$(normalize_bus_id "${PCI}")"
         DEVID="$(echo "${PCI_LINE}" | grep -oE '10de:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 | tr '[:upper:]' '[:lower:]')"
         PROF="$(profile_from_devid "${DEVID}")"
+        if [[ "${DEVID}" == "2082" && ( "${INSTALLED_PROFILE}" == "10gb80" || "${INSTALLED_PROFILE}" == "mixed80" ) ]]; then
+            PROF="10gb80"
+        fi
         [[ "${PROF}" != "unsupported" ]] || continue
         EXP="$(expected_mib_for_profile "${PROF}")"
         GPU_BDFS+=("${PCI_FULL}")
@@ -128,19 +138,28 @@ if [[ -r "${INSTALL_MOD_DIR}/card_profile" ]]; then
     info "Installed profile: $(cat "${INSTALL_MOD_DIR}/card_profile") / geometry: $(cat "${INSTALL_MOD_DIR}/unlock_geometry" 2>/dev/null || echo '?')"
 fi
 
+if [[ "${INSTALLED_PROFILE}" == "10gb80" || "${INSTALLED_PROFILE}" == "mixed80" ]]; then
+    warn "80GB is an experimental geometry; this check confirms enumeration/capacity only"
+    if printf '%s\n' "${sec2_logs}" | grep -Eqi 'CFG1=0x02779000 LMR=0x0*28b .*devId=0x2082'; then
+        ok "Latest available SEC2 logs contain coherent 2082 80GB CFG1/LMR readback"
+    else
+        warn "Could not confirm CFG1=0x02779000 and LMR=0x0000028B from retained dmesg logs"
+    fi
+fi
+
 if (( failures > 0 )); then
     echo ""
     die "${failures} GPU(s) failed unlock verification. Cold reboot if modules were just installed."
 fi
 
 echo ""
-ok "All ${#GPU_BDFS[@]} unlockable GPU(s) report unlocked memory"
+ok "All ${#GPU_BDFS[@]} unlockable GPU(s) report the selected capacity target"
 
 if [[ -x "${SCRIPT_DIR}/tools/service.sh" ]]; then
     echo ""
     info "Checking negotiated PCIe generation"
     if ! "${SCRIPT_DIR}/tools/service.sh" verify; then
-        warn "Memory unlock is healthy, but PCIe Gen2 is not active"
+        warn "Memory capacity verification passed, but PCIe Gen2 is not active"
         exit 1
     fi
 fi

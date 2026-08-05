@@ -15,14 +15,22 @@ for arg in "$@"; do
     case "${arg}" in
         --profile=8gb|--profile=8GB) PROFILE_OVERRIDE="8gb" ;;
         --profile=10gb|--profile=10GB) PROFILE_OVERRIDE="10gb" ;;
+        --profile=10gb80|--profile=10GB80|--profile=80gb|--profile=80GB|--experimental-80gb)
+            PROFILE_OVERRIDE="10gb80"
+            ;;
         --no-iommu) CONFIGURE_IOMMU=0 ;;
         --no-gen2-service) CONFIGURE_GEN2_SERVICE=0 ;;
         -h|--help)
             cat <<'EOF'
-Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
+Usage: sudo ./install.sh [--profile=8gb|10gb|10gb80] [--no-iommu] [--no-gen2-service]
 
   --profile=8gb   Force 8GB metadata label (geometry is still chosen per PCI ID)
   --profile=10gb  Force 10GB metadata label (geometry is still chosen per PCI ID)
+  --profile=10gb80
+                   EXPERIMENTAL: use 80GB geometry on every 10de:2082 card
+                   (20c2 cards, if present, remain on the stable 64GB geometry)
+  --experimental-80gb
+                   Alias for --profile=10gb80
   --no-iommu      Do not touch the kernel command line (leave IOMMU settings alone)
   --no-gen2-service
                   Do not install the early-boot PCIe Gen2 retrain service
@@ -36,6 +44,7 @@ Without --profile, each unlockable GPU is classified by PCI device ID:
   10de:2082 → 10gb / 40GB unlock
 
 Multi-GPU and mixed 8GB+10GB systems are supported in one install.
+The 80GB mode is never selected automatically.
 EOF
             exit 0
             ;;
@@ -80,7 +89,11 @@ for PCI_LINE in "${PCI_LINES[@]}"; do
     PCI="$(echo "${PCI_LINE}" | awk '{print $1}')"
     PCI_FULL="$(normalize_bus_id "${PCI}")"
     DEVID="$(echo "${PCI_LINE}" | grep -oE '10de:[0-9a-fA-F]{4}' | head -1 | cut -d: -f2 | tr '[:upper:]' '[:lower:]')"
-    PROF="$(profile_from_devid "${DEVID}")"
+    PHYSICAL_PROF="$(profile_from_devid "${DEVID}")"
+    PROF="${PHYSICAL_PROF}"
+    if [[ "${DEVID}" == "2082" && "${PROFILE_OVERRIDE}" == "10gb80" ]]; then
+        PROF="10gb80"
+    fi
     CUR_MEM="$(smi_memory_for_bus "${PCI_FULL}" || true)"
     [[ -n "${CUR_MEM}" ]] || CUR_MEM="?"
 
@@ -97,7 +110,7 @@ for PCI_LINE in "${PCI_LINES[@]}"; do
     GPU_EXPECTED+=("${EXP}")
     GPU_CURRENT+=("${CUR_MEM}")
 
-    if [[ "${PROF}" == "8gb" ]]; then
+    if [[ "${PHYSICAL_PROF}" == "8gb" ]]; then
         COUNT_8GB=$((COUNT_8GB + 1))
     else
         COUNT_10GB=$((COUNT_10GB + 1))
@@ -122,7 +135,10 @@ CARD_PROFILE=""
 if (( COUNT_8GB > 0 && COUNT_10GB > 0 )); then
     CARD_PROFILE="mixed"
     ok "Mixed variants detected → profile mixed (runtime geometry by PCI ID)"
-    if [[ -n "${PROFILE_OVERRIDE}" ]]; then
+    if [[ "${PROFILE_OVERRIDE}" == "10gb80" ]]; then
+        CARD_PROFILE="mixed80"
+        warn "EXPERIMENTAL 80GB enabled for all 10de:2082 cards; 10de:20c2 cards remain at 64GB"
+    elif [[ -n "${PROFILE_OVERRIDE}" ]]; then
         warn "--profile=${PROFILE_OVERRIDE} ignored for mixed inventory; card_profile stays mixed (each card unlocks by PCI ID)"
     fi
 elif (( COUNT_8GB > 0 )); then
@@ -133,7 +149,13 @@ else
     die "Internal error: no unlockable profiles counted"
 fi
 
-if [[ -n "${PROFILE_OVERRIDE}" && "${CARD_PROFILE}" != "mixed" ]]; then
+if [[ "${PROFILE_OVERRIDE}" == "10gb80" ]]; then
+    (( COUNT_10GB > 0 )) || die "--profile=10gb80 requires at least one 10de:2082 10GB card"
+    if [[ "${CARD_PROFILE}" != "mixed80" ]]; then
+        CARD_PROFILE="10gb80"
+        warn "EXPERIMENTAL 10GB -> 80GB geometry selected explicitly"
+    fi
+elif [[ -n "${PROFILE_OVERRIDE}" && "${CARD_PROFILE}" != "mixed" ]]; then
     if [[ "${PROFILE_OVERRIDE}" != "${CARD_PROFILE}" ]]; then
         warn "Inventory is ${CARD_PROFILE} but --profile=${PROFILE_OVERRIDE} was forced (metadata only; geometry follows PCI ID)"
     else
@@ -149,8 +171,15 @@ case "${CARD_PROFILE}" in
     10gb)
         info "Unlock geometry: 40GB per card (CFG1=0x02669000 LMR=0x0000028A)"
         ;;
+    10gb80)
+        warn "Unlock geometry: EXPERIMENTAL 80GB per 2082 card (CFG1=0x02779000 LMR=0x0000028B)"
+        warn "Reported capacity is not a stability guarantee; preserve a known-good 40GB recovery path"
+        ;;
     mixed)
         info "Unlock geometry: 64GB for 20c2 / 40GB for 2082"
+        ;;
+    mixed80)
+        warn "Unlock geometry: 64GB for 20c2 / EXPERIMENTAL 80GB for 2082"
         ;;
     *)
         die "Internal error: bad profile ${CARD_PROFILE}"
@@ -159,6 +188,10 @@ esac
 
 GPU_INVENTORY_LINES=()
 for i in "${!GPU_BDFS[@]}"; do
+    if [[ "${GPU_DEVIDS[$i]}" == "2082" && ( "${CARD_PROFILE}" == "10gb80" || "${CARD_PROFILE}" == "mixed80" ) ]]; then
+        GPU_PROFILES[$i]="10gb80"
+        GPU_EXPECTED[$i]="$(expected_mib_for_profile 10gb80)"
+    fi
     GPU_INVENTORY_LINES+=("${GPU_BDFS[$i]} ${GPU_DEVIDS[$i]} ${GPU_PROFILES[$i]} ${GPU_EXPECTED[$i]}")
 done
 export CMPUNLOCKER_CARD_PROFILE="${CARD_PROFILE}"
@@ -386,6 +419,9 @@ step "Done"
 banner
 echo "cmpunlocker install finished!"
 echo "Profile: ${CARD_PROFILE}  |  ${#GPU_BDFS[@]} GPU(s): ${COUNT_8GB}× 8gb, ${COUNT_10GB}× 10gb"
+if [[ "${CARD_PROFILE}" == "10gb80" || "${CARD_PROFILE}" == "mixed80" ]]; then
+    echo -e "${YELLOW}WARNING: 2082 cards are using the experimental 80GB geometry.${NC}"
+fi
 if [[ -n "${IOMMU_PARAMS}" && "${IOMMU_STATUS}" != "skipped" ]]; then
     echo "IOMMU:   ${IOMMU_PARAMS} (${IOMMU_STATUS})"
 else

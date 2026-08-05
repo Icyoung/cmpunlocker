@@ -33,9 +33,18 @@ profiles:
     cfg1: "0x02779000"
     lmr: "0x0000020B"
     fb_bytes: "0x0000001000000000"
+    experimental: false
   "10gb":
     stock_mib: 10240
     unlocked_mib: 40960
     cfg1: "0x02669000"
     lmr: "0x0000028A"
     fb_bytes: "0x0000000A00000000"
+    experimental: false
+  "10gb80":
+    stock_mib: 10240
+    unlocked_mib: 81920
+    cfg1: "0x02779000"
+    lmr: "0x0000028B"
+    fb_bytes: "0x0000001400000000"
+    experimental: true
