@@ -6,30 +6,9 @@ SERVICE_NAME="cmpunlocker"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 INSTALL_DIR="/opt/cmpunlocker"
 
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-else
-    RED=""; GREEN=""; YELLOW=""; CYAN=""; NC=""
-fi
+source "${SCRIPT_DIR}/common/lib.sh"
 
-info() { echo -e "${CYAN}==>${NC} $*"; }
-ok()   { echo -e "${GREEN}✓${NC} $*"; }
-warn() { echo -e "${YELLOW}!${NC} $*"; }
-err()  { echo -e "${RED}✗${NC} $*" >&2; }
-die()  { err "$*"; exit 1; }
-
-step() {
-    echo ""
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}$*${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-}
-
-echo ""
-echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║               cmpunlocker              ║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
-echo ""
+banner
 
 if [[ "${1:-}" != "--yes" && "${1:-}" != "-y" ]]; then
     warn "This removes cmpunlocker patched kernel modules:"
@@ -44,7 +23,9 @@ if [[ "${1:-}" != "--yes" && "${1:-}" != "-y" ]]; then
     exit 1
 fi
 
-step "Step 1/5: Verifying root privileges"
+step_init 5
+
+step "Verifying root privileges"
 [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./remove.sh --yes"
 ok "Running as root"
 
@@ -55,7 +36,7 @@ fi
 LOG_FILE="${LOG_DIR}/remove_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
-step "Step 2/5: Stopping leftover cmpunlocker service"
+step "Stopping cmpunlocker service and PCIe/IOMMU helpers"
 if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
     systemctl stop "${SERVICE_NAME}" || true
     ok "Service stopped"
@@ -74,6 +55,7 @@ if [[ -f "${SERVICE_FILE}" ]]; then
 fi
 pkill -f "${INSTALL_DIR}/daemon/watchdog.py" 2>/dev/null || true
 
+info "Removing PCIe Gen2 helpers"
 for legacy_unit in cmpretrain.service cmp-gen2-retrain.service; do
     systemctl disable --now "${legacy_unit}" 2>/dev/null || true
     systemctl reset-failed "${legacy_unit}" 2>/dev/null || true
@@ -87,6 +69,7 @@ rm -f /etc/systemd/system/gen2.service /usr/local/sbin/gen2-hammer
 systemctl daemon-reload 2>/dev/null || true
 ok "Removed PCIe Gen2 helpers"
 
+info "Restoring IOMMU kernel command line"
 iommu_restored=0
 for cfg in /etc/default/grub /etc/kernel/cmdline; do
     if [[ -f "${cfg}.cmpunlocker.bak" ]]; then
@@ -108,7 +91,7 @@ else
     warn "No IOMMU config backup found — kernel command line left as-is"
 fi
 
-step "Step 3/5: Removing patched modules and legacy files"
+step "Removing patched modules and legacy files"
 mod_removed=0
 kernels_touched=()
 shopt -s nullglob
@@ -155,7 +138,7 @@ else
     warn "${INSTALL_DIR} not found (ok for module-only installs)"
 fi
 
-step "Step 4/5: Reloading stock NVIDIA driver"
+step "Reloading stock NVIDIA driver"
 if lsmod | grep -q '^nvidia'; then
     warn "Unloading NVIDIA modules (display may flicker)"
     for svc in gdm3 sddm lightdm display-manager; do
@@ -195,12 +178,8 @@ else
     warn "NVIDIA modules not loaded — skipping driver reload"
 fi
 
-echo ""
-echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║               cmpunlocker              ║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
-echo ""
-
+step "Done"
+banner
 echo "cmpunlocker has been removed from system."
 echo "Log saved to: ${LOG_FILE}"
 echo ""

@@ -49,79 +49,16 @@ done
 
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-else
-    RED=""; GREEN=""; YELLOW=""; CYAN=""; NC=""
-fi
+source "${SCRIPT_DIR}/common/lib.sh"
 
-info() { echo -e "${CYAN}==>${NC} $*"; }
-ok()   { echo -e "${GREEN}✓${NC} $*"; }
-warn() { echo -e "${YELLOW}!${NC} $*"; }
-err()  { echo -e "${RED}✗${NC} $*" >&2; }
-die()  { err "$*"; exit 1; }
+banner
+step_init 6
 
-step() {
-    echo ""
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${CYAN}$*${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-}
-
-normalize_bus_id() {
-    local raw="$1"
-    raw="$(echo "${raw}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-    if [[ "${raw}" =~ ^([0-9a-f]+):([0-9a-f]{2}):([0-9a-f]{2})\.([0-9a-f])$ ]]; then
-        printf '%04x:%s:%s.%s\n' "$((16#${BASH_REMATCH[1]}))" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
-    elif [[ "${raw}" =~ ^[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$ ]]; then
-        echo "0000:${raw}"
-    else
-        echo "${raw}"
-    fi
-}
-
-profile_from_devid() {
-    case "$1" in
-        20c2) echo "8gb" ;;
-        2082) echo "10gb" ;;
-        *) echo "unsupported" ;;
-    esac
-}
-
-expected_mib_for_profile() {
-    case "$1" in
-        8gb) echo "65536" ;;
-        10gb) echo "40960" ;;
-        *) echo "" ;;
-    esac
-}
-
-smi_memory_for_bus() {
-    local want="$1"
-    local line bus mem
-    [[ -n "${SMI_MEM_CACHE:-}" ]] || return 0
-    while IFS= read -r line; do
-        [[ -n "${line}" ]] || continue
-        bus="$(normalize_bus_id "$(echo "${line}" | cut -d, -f1)")"
-        mem="$(echo "${line}" | cut -d, -f2 | tr -d '[:space:]')"
-        if [[ "${bus}" == "${want}" ]]; then
-            echo "${mem}"
-            return 0
-        fi
-    done <<< "${SMI_MEM_CACHE}"
-}
-
-echo ""
-echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║               cmpunlocker              ║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
-echo ""
-
-step "Step 1/6: Verifying root privileges"
+step "Verifying root privileges"
 [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./install.sh"
 ok "Running as root"
 
-step "Step 2/6: Detecting CMP 170HX GPU(s)"
+step "Detecting CMP 170HX GPU(s)"
 mapfile -t PCI_LINES < <(lspci -nn 2>/dev/null | grep -iE '10de:20b0|10de:20c2|10de:2082' || true)
 [[ ${#PCI_LINES[@]} -gt 0 ]] || die "No CMP 170HX GPU found (10de:20b0 / 10de:20c2 / 10de:2082)"
 
@@ -180,7 +117,7 @@ else
     info "Inventory: ${#GPU_BDFS[@]} unlockable (${COUNT_8GB}× 8gb, ${COUNT_10GB}× 10gb)"
 fi
 
-step "Step 3/6: Selecting card memory profile"
+step "Selecting card memory profile"
 CARD_PROFILE=""
 if (( COUNT_8GB > 0 && COUNT_10GB > 0 )); then
     CARD_PROFILE="mixed"
@@ -227,7 +164,7 @@ done
 export CMPUNLOCKER_CARD_PROFILE="${CARD_PROFILE}"
 export CMPUNLOCKER_GPU_INVENTORY="$(printf '%s\n' "${GPU_INVENTORY_LINES[@]}")"
 
-step "Step 4/6: Verifying nvidia-open (${SUPPORTED_VERSIONS_CSV})"
+step "Verifying nvidia-open (${SUPPORTED_VERSIONS_CSV})"
 [[ ${#SUPPORTED_VERSIONS[@]} -gt 0 ]] || die "No supported versions listed in driver/VERSION"
 if [[ -d /sys/firmware/efi ]] && command -v mokutil &>/dev/null; then
     if mokutil --sb-state 2>/dev/null | grep -qi 'SecureBoot enabled'; then
@@ -249,7 +186,8 @@ if [[ -r /proc/driver/nvidia/version ]]; then
     detected="$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' /proc/driver/nvidia/version | head -1 || true)"
 fi
 if [[ -z "${detected}" ]] && command -v nvidia-smi &>/dev/null; then
-    detected="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+    smi_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+    [[ "${smi_version}" =~ ^[0-9]+(\.[0-9]+)+$ ]] && detected="${smi_version}"
 fi
 if [[ -z "${detected}" ]]; then
     for cand in "${SUPPORTED_VERSIONS[@]}"; do
@@ -271,17 +209,14 @@ ok "NVIDIA driver ${detected} is supported"
 [[ -d "/lib/modules/$(uname -r)/build" ]] || die "Kernel headers missing for $(uname -r). Install linux-headers-$(uname -r) or kernel-devel."
 ok "Kernel headers present for $(uname -r)"
 
-step "Step 4b/6: Removing Nvidia DKMS modules"
-info "Not all systems feature default DKMS modules"
-
+info "Removing conflicting NVIDIA DKMS modules (not all systems have any)"
 for ver in "${SUPPORTED_VERSIONS[@]}"; do
     dkms remove nvidia/"${ver}" --all 2>/dev/null || true
 done
-
 depmod -a "$(uname -r)"
 ok "DKMS conflicting modules resolution complete"
 
-step "Step 5/6: Building and installing patched modules"
+step "Building and installing patched modules"
 chmod +x "${SCRIPT_DIR}/driver/build.sh"
 CMPUNLOCKER_DRIVER_VERSION="${detected}" \
 CMPUNLOCKER_CARD_PROFILE="${CARD_PROFILE}" \
@@ -289,7 +224,7 @@ CMPUNLOCKER_GPU_INVENTORY="${CMPUNLOCKER_GPU_INVENTORY}" \
     "${SCRIPT_DIR}/driver/build.sh"
 ok "Patched modules installed (profile ${CARD_PROFILE})"
 
-step "Step 5b/6: Configuring PCIe Gen2"
+info "Configuring PCIe Gen2"
 cat > /etc/modprobe.d/cmp-pcie-gen2.conf <<'EOF'
 options nvidia NVreg_RegistryDwords="RmForceEnableGen2=1;RMPcieLinkSpeed=0x1"
 EOF
@@ -315,7 +250,7 @@ else
     warn "--no-gen2-service given; early-boot PCIe retraining is not installed"
 fi
 
-step "Step 5c/6: Configuring IOMMU (passthrough)"
+info "Configuring IOMMU (passthrough)"
 IOMMU_STATUS="skipped"
 IOMMU_PARAMS=""
 
@@ -447,12 +382,8 @@ else
     fi
 fi
 
-step "Step 6/6: Done"
-echo ""
-echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║               cmpunlocker              ║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
-echo ""
+step "Done"
+banner
 echo "cmpunlocker install finished!"
 echo "Profile: ${CARD_PROFILE}  |  ${#GPU_BDFS[@]} GPU(s): ${COUNT_8GB}× 8gb, ${COUNT_10GB}× 10gb"
 if [[ -n "${IOMMU_PARAMS}" && "${IOMMU_STATUS}" != "skipped" ]]; then

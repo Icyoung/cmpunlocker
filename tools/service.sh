@@ -1,7 +1,4 @@
 #!/bin/bash
-# Install/remove/verify the early-boot PCIe Gen2 retrain service
-# (systemd/gen2.service + tools/hammer.sh).
-# Wired into install.sh (Step 5b/6), remove.sh, and verify.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,10 +10,7 @@ HAMMER_SOURCE="${SCRIPT_DIR}/hammer.sh"
 HAMMER_TARGET="/usr/local/sbin/gen2-hammer"
 LOG_FILE="/var/log/gen2.log"
 
-info() { echo "==> $*"; }
-ok() { echo "✓ $*"; }
-warn() { echo "! $*" >&2; }
-die() { echo "✗ $*" >&2; exit 1; }
+source "${PROJECT_DIR}/common/lib.sh"
 
 usage() {
     cat <<EOF

@@ -6,45 +6,7 @@ KVER="$(uname -r)"
 INSTALL_MOD_DIR="/lib/modules/${KVER}/updates/cmpunlocker"
 INVENTORY_FILE="${INSTALL_MOD_DIR}/gpu_inventory"
 
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-else
-    RED=""; GREEN=""; YELLOW=""; CYAN=""; NC=""
-fi
-
-info() { echo -e "${CYAN}==>${NC} $*"; }
-ok()   { echo -e "${GREEN}✓${NC} $*"; }
-warn() { echo -e "${YELLOW}!${NC} $*"; }
-err()  { echo -e "${RED}✗${NC} $*" >&2; }
-die()  { err "$*"; exit 1; }
-
-normalize_bus_id() {
-    local raw="$1"
-    raw="$(echo "${raw}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-    if [[ "${raw}" =~ ^([0-9a-f]+):([0-9a-f]{2}):([0-9a-f]{2})\.([0-9a-f])$ ]]; then
-        printf '%04x:%s:%s.%s\n' "$((16#${BASH_REMATCH[1]}))" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
-    elif [[ "${raw}" =~ ^[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$ ]]; then
-        echo "0000:${raw}"
-    else
-        echo "${raw}"
-    fi
-}
-
-profile_from_devid() {
-    case "$1" in
-        20c2) echo "8gb" ;;
-        2082) echo "10gb" ;;
-        *) echo "unsupported" ;;
-    esac
-}
-
-expected_mib_for_profile() {
-    case "$1" in
-        8gb) echo "65536" ;;
-        10gb) echo "40960" ;;
-        *) echo "" ;;
-    esac
-}
+source "${SCRIPT_DIR}/common/lib.sh"
 
 is_unlocked_memory() {
     local profile="$1"
@@ -76,26 +38,10 @@ is_stock_memory() {
     return 1
 }
 
-smi_memory_for_bus() {
-    local want="$1"
-    local line bus mem
-    while IFS= read -r line; do
-        [[ -n "${line}" ]] || continue
-        bus="$(normalize_bus_id "$(echo "${line}" | cut -d, -f1)")"
-        mem="$(echo "${line}" | cut -d, -f2 | tr -d '[:space:]')"
-        if [[ "${bus}" == "${want}" ]]; then
-            echo "${mem}"
-            return 0
-        fi
-    done <<< "${SMI_MEM_CACHE}"
-}
+banner
+step_init 3
 
-echo ""
-echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║               cmpunlocker              ║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
-echo ""
-
+step "Locating GPU inventory"
 command -v nvidia-smi &>/dev/null || die "nvidia-smi not found"
 SMI_MEM_CACHE="$(nvidia-smi --query-gpu=pci.bus_id,memory.total --format=csv,noheader,nounits 2>/dev/null || true)"
 [[ -n "${SMI_MEM_CACHE}" ]] || die "nvidia-smi returned no GPU memory data"
@@ -135,6 +81,7 @@ fi
 
 [[ ${#GPU_BDFS[@]} -gt 0 ]] || die "No unlockable GPUs to verify"
 
+step "Checking memory unlock status"
 failures=0
 printf "\n%-16s %-8s %-8s %-12s %-12s %s\n" "BDF" "PCI ID" "Variant" "Expect" "Actual" "Status"
 for i in "${!GPU_BDFS[@]}"; do
@@ -166,7 +113,7 @@ for i in "${!GPU_BDFS[@]}"; do
     printf "%-16s %-8s %-8s ~%-11s %-12s %s\n" "${bdf}" "${devid}" "${profile}" "${expected}" "${actual}" "${status}"
 done
 
-echo ""
+step "Checking unlock logs and installed profile"
 sec2_logs="$(dmesg 2>/dev/null | grep 'SEC2_DEBUG' || true)"
 if [[ -n "${sec2_logs}" ]]; then
     ok "dmesg contains SEC2_DEBUG unlock logs"

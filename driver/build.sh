@@ -41,44 +41,29 @@ version_supported "${VERSION}" || die "Unsupported driver version '${VERSION}' (
 [[ -d "${PATCH_DIR}" ]] || die "Missing patches directory: ${PATCH_DIR}"
 [[ -d "${KSRC}" ]] || die "Kernel headers not found at ${KSRC}. Install linux-headers-${KVER} (or kernel-devel)."
 command -v python3 &>/dev/null || die "python3 is required to apply the card memory profile"
+command -v sha256sum &>/dev/null || die "sha256sum is required"
 info "Building against open-gpu-kernel-modules ${VERSION}"
 
-mkdir -p "${BUILD_ROOT}"
-
-if [[ ! -f "${TARBALL}" ]]; then
-    info "Downloading open-gpu-kernel-modules ${VERSION}..."
-    curl -L --fail -o "${TARBALL}.partial" "${TARBALL_URL}"
-    mv "${TARBALL}.partial" "${TARBALL}"
-    ok "Downloaded ${TARBALL}"
-else
-    ok "Using cached tarball ${TARBALL}"
-fi
-
-info "Extracting sources..."
-rm -rf "${SRC_DIR}"
-tar -xzf "${TARBALL}" -C "${BUILD_ROOT}"
-if [[ ! -d "${SRC_DIR}" ]]; then
-    extracted="$(find "${BUILD_ROOT}" -maxdepth 1 -type d -name "${SRC_NAME}*" | head -1)"
-    [[ -n "${extracted}" ]] || die "Extracted source tree not found"
-    mv "${extracted}" "${SRC_DIR}"
-fi
-ok "Sources ready: ${SRC_DIR}"
-
-info "Applying unlock patches..."
-cd "${SRC_DIR}"
-shopt -s nullglob
-patches=("${PATCH_DIR}"/*.patch)
-[[ ${#patches[@]} -gt 0 ]] || die "No patches found in ${PATCH_DIR}"
-for p in "${patches[@]}"; do
-    info "  $(basename "${p}")"
-    patch -p1 < "${p}"
+PATCH_ORDER=(
+    sec2-postbl-plm-ss-cfg.patch
+    booter-verify.patch
+    late-pma.patch
+    bar0-pramin-clamp.patch
+    ce-scrub-workarounds.patch
+    persistent-sw-state.patch
+    pcie-gen2.patch
+    pcie-gen2-probe-retrain.patch
+    name-string.patch
+)
+PATCH_FILES=()
+for name in "${PATCH_ORDER[@]}"; do
+    p="${PATCH_DIR}/${name}"
+    [[ -f "${p}" ]] || die "Missing patch: ${p}"
+    PATCH_FILES+=("${p}")
 done
-ok "All patches applied"
+PATCH_HASH="$(cat "${PATCH_FILES[@]}" | sha256sum | cut -d' ' -f1)"
 
 PROFILE="${CMPUNLOCKER_CARD_PROFILE:-8gb}"
-GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
-[[ -f "${GSP_C}" ]] || die "Missing ${GSP_C} after patching"
-
 SKIP_GEOMETRY_REWRITE=0
 case "${PROFILE}" in
     8gb|8GB)
@@ -108,12 +93,51 @@ case "${PROFILE}" in
         ;;
 esac
 
-info "Applying memory profile ${PROFILE} (${UNLOCK_LABEL} geometry)..."
+BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:${PATCH_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
 
-if [[ "${SKIP_GEOMETRY_REWRITE}" -eq 1 ]]; then
-    info "mixed profile: runtime device-id geometry (no build-time CFG1/LMR rewrite)"
+mkdir -p "${BUILD_ROOT}"
+
+if [[ ! -f "${TARBALL}" ]]; then
+    info "Downloading open-gpu-kernel-modules ${VERSION}..."
+    curl -L --fail -o "${TARBALL}.partial" "${TARBALL_URL}"
+    mv "${TARBALL}.partial" "${TARBALL}"
+    ok "Downloaded ${TARBALL}"
 else
-    python3 - "${GSP_C}" "${CFG1}" "${LMR}" "${FB_BYTES}" "${UNLOCK_LABEL}" <<'PY'
+    ok "Using cached tarball ${TARBALL}"
+fi
+
+STAMP_FILE="${SRC_DIR}/.cmpunlocker-stamp"
+if [[ -d "${SRC_DIR}" ]] && [[ "$(cat "${STAMP_FILE}" 2>/dev/null || true)" == "${BUILD_STAMP}" ]]; then
+    SKIP_PREP=1
+    ok "Source tree already extracted and patched for this exact build; reusing it"
+else
+    SKIP_PREP=0
+    info "Extracting sources..."
+    rm -rf "${SRC_DIR}"
+    tar -xzf "${TARBALL}" -C "${BUILD_ROOT}"
+    if [[ ! -d "${SRC_DIR}" ]]; then
+        extracted="$(find "${BUILD_ROOT}" -maxdepth 1 -type d -name "${SRC_NAME}*" | head -1)"
+        [[ -n "${extracted}" ]] || die "Extracted source tree not found"
+        mv "${extracted}" "${SRC_DIR}"
+    fi
+    ok "Sources ready: ${SRC_DIR}"
+
+    info "Applying unlock patches..."
+    cd "${SRC_DIR}"
+    for i in "${!PATCH_ORDER[@]}"; do
+        info "  ${PATCH_ORDER[$i]}"
+        patch -p1 < "${PATCH_FILES[$i]}"
+    done
+    ok "All patches applied"
+
+    GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
+    [[ -f "${GSP_C}" ]] || die "Missing ${GSP_C} after patching"
+
+    info "Applying memory profile ${PROFILE} (${UNLOCK_LABEL} geometry)..."
+    if [[ "${SKIP_GEOMETRY_REWRITE}" -eq 1 ]]; then
+        info "mixed profile: runtime device-id geometry (no build-time CFG1/LMR rewrite)"
+    else
+        python3 - "${GSP_C}" "${CFG1}" "${LMR}" "${FB_BYTES}" "${UNLOCK_LABEL}" <<'PY'
 import pathlib, re, sys
 path, cfg1, lmr, fb, label = sys.argv[1:6]
 text = pathlib.Path(path).read_text()
@@ -153,8 +177,13 @@ if n1 != 1 or n2 != 1 or n3 != 1:
 pathlib.Path(path).write_text(text2)
 print(f"cfg1={cfg1} lmr={lmr} fb={fb} ({label})")
 PY
+    fi
+    ok "Memory profile ${PROFILE}: unlock_geometry=${UNLOCK_LABEL}"
+
+    printf '%s\n' "${BUILD_STAMP}" > "${STAMP_FILE}"
 fi
-ok "Memory profile ${PROFILE}: unlock_geometry=${UNLOCK_LABEL}"
+
+cd "${SRC_DIR}"
 mkdir -p "${INSTALL_MOD_DIR}"
 printf '%s\n' "${VERSION}" > "${INSTALL_MOD_DIR}/driver_version"
 printf '%s\n' "${PROFILE}" > "${INSTALL_MOD_DIR}/card_profile"
@@ -167,13 +196,24 @@ else
 fi
 
 info "Building modules for kernel ${KVER}..."
-cd "${SRC_DIR}"
 find . -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
-rm -rf src/nvidia/_out src/nvidia-modeset/_out kernel-open/conftest 2>/dev/null || true
-make clean 2>/dev/null || true
+if [[ "${SKIP_PREP}" -eq 0 ]]; then
+    rm -rf src/nvidia/_out src/nvidia-modeset/_out kernel-open/conftest 2>/dev/null || true
+else
+    info "Reusing prior build output — incremental rebuild"
+fi
+
 JOBS="$(nproc)"
-make -j"${JOBS}" modules SYSSRC="${KSRC}"
+CC_CMD="gcc"
+if command -v ccache &>/dev/null; then
+    CC_CMD="ccache gcc"
+    info "ccache detected — compiler output will be cached for faster rebuilds"
+fi
+make -j"${JOBS}" modules SYSSRC="${KSRC}" CC="${CC_CMD}"
 ok "Modules built"
+if command -v ccache &>/dev/null; then
+    ccache -s 2>/dev/null | sed 's/^/  /' || true
+fi
 info "Installing modules to ${INSTALL_MOD_DIR}..."
 mkdir -p "${INSTALL_MOD_DIR}"
 

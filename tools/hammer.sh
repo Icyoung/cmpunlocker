@@ -1,13 +1,4 @@
 #!/bin/bash
-# Early-boot PCIe Gen2 retrain loop for CMP 170HX (10de:20c2 / 10de:2082).
-#
-# The Gen2 capability the driver's probe-time patch exposes
-# (driver/patches/0008-pcie-gen2-probe-retrain.patch) is only open for a
-# short window during GSP bootstrap. If the driver's own one-shot retrain
-# misses that window, this script keeps requesting Gen2 from the GPU's
-# upstream bridge every ~50ms until it lands or the attempt budget runs out.
-# Installed/removed via tools/service.sh; runs as
-# systemd/gen2.service before basic.target.
 set -uo pipefail
 
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -94,12 +85,9 @@ retrain_one() {
             return 1
         fi
 
-        # Preserve all unrelated bits; the endpoint may clamp this to Gen1
-        # until the driver's probe-time patch briefly exposes Gen2.
         setpci -s "${bridge}" CAP_EXP+30.w=0002:000f 2>/dev/null || true
         setpci -s "${gpu}" CAP_EXP+30.w=0002:000f 2>/dev/null || true
 
-        # Retraining must be initiated by the upstream bridge.
         setpci -s "${bridge}" CAP_EXP+10.w=0020:0020 2>/dev/null || true
 
         status="$(read_link_status "${gpu}")"
