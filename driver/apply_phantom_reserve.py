@@ -10,11 +10,12 @@ the pages that host the GSP-owned phantom structures.
 Hook: end of memmgrCreateHeap_IMPL (mem_mgr.c), after the CMP diagnostic
 block, before the final return.  Idempotent via "CMP_MEM_RSV" marker.
 
-Current range: [0x900000000, 0xAFFFFFFF) = [36 GiB, 44 GiB), an 8 GiB
-hole (4 GiB-aligned, deliberately NOT die-aligned: the measured 37-40 GiB
-phantom activity band straddles the 40 GiB die boundary — the known
-structure sits at 40 GiB + 64 KiB — so a die-aligned 8 GiB window cannot
-cover it).  Narrowed from the original [32 GiB, 44 GiB) wide hole.
+Current range: [0x900000000, 0xA3FFFFFFF) = [36 GiB, 41 GiB), a 5 GiB hole.
+History: [32,44) 12G → [36,44) 8G → [36,41) 5G (2026-08-08, behaviorally
+qualified: 72G drip/torture/verify all PASS).  The known-deadly structure
+sits at 40 GiB + 64 KiB; the 41G upper edge keeps ~0.94 GiB margin.
+If instability ever appears, revert to the 8G hole (see FIX_PLAN_RECLAIM.md).
+Runtime kill-switch: NVreg RMCmpPhantomReserve=0 disables the pin.
 """
 import pathlib
 import sys
@@ -35,32 +36,44 @@ PIN = """
      * user-allocatable heap.  When a user allocation receives those pages
      * and is written, GSP dereferences the user data as pointers and dies
      * (Xid 1 / channel wedge).  The structure is invisible to the CPU-side
-     * PMA, so pin the enclosing 128 MiB here; the GSP-visible fbRegionInfo
+     * PMA, so pin the enclosing range here; the GSP-visible fbRegionInfo
      * map is deliberately left untouched (splitting it crashes GSP at boot).
+     * Runtime kill-switch: NVreg RMCmpPhantomReserve=0 skips the pin (both
+     * here and in the MIG zero-usage tolerance below).
      */
     {
         NvU32 rsvDevId = pGpu->idInfo.PCIDeviceID >> 16;
-        if (rsvDevId == 0x2082 && status == NV_OK &&
+        NvU32 rsvEnable = 1;
+        /* runtime kill-switch for root-cause experiments:
+         * NVreg_RegistryDwords="RMCmpPhantomReserve=0" disables the pin */
+        (void)osReadRegistryDword(pGpu, "RMCmpPhantomReserve", &rsvEnable);
+        if (rsvDevId == 0x2082 && rsvEnable != 0 && status == NV_OK &&
             pMemoryManager->pHeap != NULL &&
             pMemoryManager->pHeap->pPmaObject != NULL &&
             memmgrIsPmaInitialized(pMemoryManager))
         {
             PMA *pRsvPma = pMemoryManager->pHeap->pPmaObject;
-            /* phantom hole: [36G, 44G) — 8G die-aligned; covers the measured
-             * 37-40G phantom activity band with ~1G/4G margin.
-             * (narrowed 2026-08-07 from [32G,44G) 12G; costs 8G of 80G) */
-            if (pmaIsPmaManaged(pRsvPma, 0x900000000ULL, 0xAFFFFFFFULL))
+            /* phantom hole EXPERIMENT: [36G, 41G) — 5G. The known-deadly
+             * structure sits at 40G+64K; upper edge 41G keeps ~0.94G margin.
+             * If stress passes, usable rises to ~74G; if GSP dies, revert to
+             * the qualified 8G hole [36G,44G). */
+            if (pmaIsPmaManaged(pRsvPma, 0x900000000ULL, 0xA3FFFFFFFULL))
             {
-                pmaSetBlockStateAttrib(pRsvPma, 0x900000000ULL, 0x200000000ULL,
+                pmaSetBlockStateAttrib(pRsvPma, 0x900000000ULL, 0x140000000ULL,
                                        STATE_PIN, STATE_MASK);
                 NV_PRINTF(LEVEL_ERROR,
-                          "CMP_MEM_RSV: pinned [0x900000000,0xafffffff] in PMA (phantom guard)\\n");
+                          "CMP_MEM_RSV: pinned [0x900000000,0xa3fffffff] in PMA (phantom guard, 5G experiment)\\n");
             }
             else
             {
                 NV_PRINTF(LEVEL_ERROR,
                           "CMP_MEM_RSV: phantom range not PMA-managed, guard inactive\\n");
             }
+        }
+        else if (rsvDevId == 0x2082 && rsvEnable == 0)
+        {
+            NV_PRINTF(LEVEL_ERROR,
+                      "CMP_MEM_RSV: phantom guard DISABLED via RMCmpPhantomReserve=0\\n");
         }
     }
 """
@@ -71,9 +84,13 @@ ZERO_CHECK_OLD = (
     "        if (freeMem != totalMem)\n"
 )
 ZERO_CHECK_NEW = (
-    "        /* cmpunlocker: tolerate the 10GB-SKU phantom-reserve pin */\n"
-    "        NvU64 cmpPhantomRsv =\n"
-    "            ((pGpu->idInfo.PCIDeviceID >> 16) == 0x2082) ? 0x200000000ULL : 0;\n"
+    "        /* cmpunlocker: tolerate the phantom-reserve pin when enabled */\n"
+    "        NvU32 cmpRsvEnable = 1;\n"
+    "        NvU64 cmpPhantomRsv;\n"
+    "        (void)osReadRegistryDword(pGpu, \"RMCmpPhantomReserve\", &cmpRsvEnable);\n"
+    "        cmpPhantomRsv =\n"
+    "            (((pGpu->idInfo.PCIDeviceID >> 16) == 0x2082) && cmpRsvEnable != 0)\n"
+    "                ? 0x140000000ULL : 0;\n"
     "        if (freeMem + cmpPhantomRsv != totalMem)\n"
 )
 

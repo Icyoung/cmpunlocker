@@ -11,3 +11,4 @@ __pycache__/
 # Editor / filesystem metadata
 .DS_Store
 ._*
+gsp_analysis/

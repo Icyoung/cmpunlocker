@@ -1,11 +1,9 @@
 # 显存收复计划：从 67G 到 80G
 
-> 状态（2026-08-07 更新）：方案 1 **已完成并验证**——挖洞收窄为 8G
-> `[0x900000000, 0xAFFFFFFF)`(36G–44G；4G 对齐，故意不做 die 对齐：
-> 活动带横跨 40G die 边界，die 对齐的 8G 窗口盖不住它）。可用显存
-> ~66G → **70G**(70G 分配+写通过，71G OOM)。验证：70G 全程 drip 无幻影
-> 命中、torture×10 PASS、verify×10 PASS、BF16 算力 152 TFLOPS 正常。
-> 当前生效可用量 = 70G。
+> 状态（2026-08-08 更新）：挖洞已收窄到 **5G `[36G,41G)`**，可用显存 **~72G**
+> (72G 分配+写通过，74G OOM)。验证：72G 全程 drip 无幻影命中、torture×10、
+> verify×10、BF16 169.6 TFLOPS。方案 2 的 regkey 根修路已证伪（详见下文）。
+> 洞的运行时开关 `RMCmpPhantomReserve` 已固化（默认开）。
 
 ## 根因回顾
 
@@ -32,27 +30,45 @@ CPU 侧 PMA 无账 → 用户大写入与之双重分配 → 踩中即 GSP 死�
   4. 不稳定则退回 32G–44G。
 - 预期收益：可用 ~71G。
 
-## 方案 2：GSP 固件根因修复，收复全部 12G（研究型，后做）
+## 方案 2：GSP 固件根因修复（2026-08-08：owner 已定位，regkey 路径已证伪）
 
 目标：让 GSP 内部 struct 页不走用户堆，从根上消除双重分配，不再需要挖洞。
 
-- 第一步定位（产出 owner 报告再决定动不动手）:
-  - 用 `tools/f0_phantom_scan.cu` / `f0_phantom_peek.cu` 取活动带内 struct 页的
-    确切物理地址集合；
-  - 结合 GSP 固件(`gsp_tu10x.bin` 提取）反查这些地址属于哪个分配池——
-    大概率是 GMMU 页表页的 internal client sub-heap 未从 PMA 独立。
-- 修复方向（假设 B 的深化）:
-  - 若固件里存在控制 sub-heap 归属的字段/flag:patch GSP blob 或 RM 侧初始化参数，
-    让页表页走 GSP 私有 reserved 区 → 用户堆完整 80G 可用，挖洞删除。
-  - 若无现成开关：在 `memmgrCreateHeap_IMPL` 补丁点把 internal client 的
-    heap base 重定向到 GSP reserved 区（phantom_carve 旧思路，当时未打通，
-    需先确认 reserved 区位置与容量）。
-- 风险与前置：
-  - GSP blob 逆向工作量大，成功率不确定；
-  - 需重新确认当前 GSP 固件免校验加载的前提仍然成立，否则 patch 无法生效。
-- 决策点：只做有限时间的定位。有可行 patch 点 → 实施；工程量过大 →
-  停在方案 1 的 71G,71G 已足够跑 27B 级模型。
-- 预期收益：成功则 ~79–80G；失败无损失（回退方案 1)。
+### 阶段一定位结论（owner 报告）
+
+- 固件已解包：`gsp_ga10x.bin` 是容器（`.fwimage` 段 + 各芯片签名段），主 ELF
+  在其内偏移 `0x19f040`(RISC-V ET_EXEC,section header 被抹，字符串在）。
+  解包产物在 `gsp_analysis/`（未入库）。
+- 幻影归属（源码级，GSP 固件与开源树同源）:
+  - `gmmu_walk.c`：页表层分配走 `pPageTableMemPool`(`VASPACE_FLAGS_PTETABLE_PMA_MANAGED`
+    默认开，由 `bClientPageTablesPmaManaged=NV_TRUE` 决定）;
+  - `pool_alloc.c allocUpstreamTopPool`：池顶用 `pmaAllocatePages(PMA_ALLOCATE_PINNED
+    |PMA_ALLOCATE_PERSISTENT)` 拿 64K/2M 大块——**过的是 GSP 侧 PMA 视图，主机侧
+    PMA 无记录** → 主机把同一段物理页发给用户 → 写入即踩死 GSP。双账本实锤。
+- regkey 实验（新增运行时开关 `RMCmpPhantomReserve`，已固化进 build，默认开）:
+  - E3 `RmGspFirmwareHeapSizeMB=1024`（实际被 HAL 钳到 256MB)+ pin 关：
+    **74G 分配即撞死**(Xid 154)。假设 C 证伪。
+  - E4 `RMEnablePmaManagedPtables=0` + heap 1024 + pin 关：**同样 74G 撞死**。
+    B+C 组合证伪。（此前 B 单独：死亡点 39G→23G，仍死。）
+  - 结论：**没有任何 regkey 能消除幻影**，只是移动它。免挖洞根修只剩两条路：
+    GSP blob 二进制 patch（工程量大、成功率不确定）、fbRegionInfo 保留属性标记
+    （此前拆图尝试在 GSP boot 期即崩，风险高）。
+- 决策：投入产出上不推荐继续硬刚固件。**当前最优 = 8G 挖洞（70G 可用）**。
+  剩余可选项只有"干净扫描 → 收窄到 5G 洞（~74G)"（见下节）。
+
+### 进一步收窄（2026-08-08：5G 洞已行为验证通过）
+
+- 干净扫描路线放弃：冷启动后 VRAM 内容仍不刷净，扫描到的"结构"实为
+  启动残留（GSP 启动组件的 ELF 映像），活/死无法区分。
+- 改为直接行为验证：洞收窄到 **`[0x900000000, 0xA3FFFFFFF)` = [36G,41G) 5G**
+  （致命结构在 40G+64K，上沿留 ~0.94G 余量）。
+- 验证（热加载态，2026-08-08）：单笔 72G 分配+写 OK（74G OOM，可用上限 ~72-73G);
+  drip 72G 全程无幻影命中；torture×10、verify×10 PASS;BF16 169.6 TFLOPS 正常。
+- **当前生效：5G 洞，可用 ~72G**。若日后出现不稳定，回退 8G 洞（改
+  `apply_phantom_reserve.py` 两处常量：pin `0x140000000→0x200000000`、
+  上沿 `0xA3FFFFFFF→0xAFFFFFFF`)。
+- 运行时开关：`NVreg_RegistryDwords="RMCmpPhantomReserve=0"` 可整洞关闭
+  （仅供实验，关闭后 74G 分配必现 GSP 死）。
 
 ## 顺序
 
