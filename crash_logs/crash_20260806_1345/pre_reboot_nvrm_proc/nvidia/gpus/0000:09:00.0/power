@@ -1,0 +1,13 @@
+Runtime D3 status:          Disabled by default
+Tegra iGPU Rail-Gating:     Disabled
+Video Memory:               Active
+
+GPU Hardware Support:
+ Video Memory Self Refresh: Not Supported
+ Video Memory Off:          Not Supported
+
+S0ix Power Management:
+ Platform Support:          Not Supported
+ Status:                    Disabled
+
+Notebook Dynamic Boost:     Not Supported

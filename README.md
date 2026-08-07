@@ -62,7 +62,39 @@ This compiles the coherent 80GB values into the real driver path:
 80GB target. Capacity recognition alone does not establish workload stability;
 see [Experimental 80GB](docs/EXPERIMENTAL_80GB.md).
 
-Then perform a cold reboot (full power off, then boot).
+### WPR/PMA safety revision
+
+This source includes the `wpr-safe-r3` fix. The former experimental late-PMA
+path that converted the highest reserved FB region into allocatable memory has
+been removed. GSP WPR, firmware heap, metadata, and other `bRsvdRegion`
+carveouts remain reserved and are never passed to `pmaRegisterRegion()` by
+cmpunlocker.
+
+The safe allocatable amount can therefore be slightly lower than the capacity
+shown by `nvidia-smi`; that difference is expected firmware/driver reservation,
+not missing user memory. `build.sh` and `verify.sh` reject modules containing
+the removed late-PMA marker.
+
+The installer does not hot-reload the GPU driver by default. Perform a complete
+power-off/cold boot, then run:
+
+```bash
+sudo ./verify.sh
+sudo ./tools/collect-diagnostics.sh
+```
+
+For the first high-memory workload, run it through the monitor so both the
+pre-failure state and the first kernel error are preserved:
+
+```bash
+sudo ./tools/run-monitored.sh --interval=1 --output=/root/cmp-logs -- \
+  python3 your_workload.py
+```
+
+The monitor writes a timestamped archive plus SHA-256 checksum even when the
+workload exits with an error. Do not use `CMPUNLOCKER_ALLOW_HOT_RELOAD=1` for
+stability qualification; that developer override cannot prove stale GSP/WPR
+state was cleared.
 
 ## What Gets Unlocked
 
@@ -73,6 +105,7 @@ Then perform a cold reboot (full power off, then boot).
 | Experimental 80GB geometry on 10GB cards | Opt-in; stability not established |
 | PCIe Gen 2 speeds | Working ✓ |
 | JTAG (Host2Jtag register access) | Working ✓ |
+| WPR/PMA reserved-memory protection (`wpr-safe-r3`) | Working; old unsafe module rejected |
 | Persistence across reboot (patched modules) | Working ✓ |
 
 ---

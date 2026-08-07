@@ -1,0 +1,39 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -4995,11 +4995,34 @@
+                 lmrValue  = 0x0000028AU;
+             }
+ 
+-            GPU_REG_WR32(pGpu, 0x0082381cU, 0x88888888U);
+-            GPU_REG_WR32(pGpu, 0x00823820U, 0x00000008U);
++            /*
++             * SS0/SS1 keep the R3 compute-unlock values 0x88888888/0x00000008.
++             * NOTE: the A100-80GB dumped values (0x00112011/0x00000002) were
++             * tried here (B4 experiment) — no effect on the 80GB crash, but
++             * they RE-NERF compute on CMP silicon (SS bit meaning is
++             * OTP/fuse-dependent). Do not "fix" these to A100 values again.
++             */
++            GPU_REG_WR32(pGpu, 0x0082381cU, 0x88888888U);
++            GPU_REG_WR32(pGpu, 0x00823820U, 0x00000008U);
+             GPU_REG_WR32(pGpu, 0x009a0204U, cfg1Value);
+             GPU_REG_WR32(pGpu, 0x00100ce0U, lmrValue);
+ 
++            /*
++             * CONFIG4 experiment: 8GB SKU (0x20C2) unlocking to
++             * 64GB cleanly reads CONFIG4_BCAST = 0xc4028033.
++             * 10GB SKU (0x2082) reads 0xc4030033 (bits 15/16 differ).
++             * Force 8GB-flavored value on 10GB card only.
++             */
++            if (devId == SEC2_POSTBL_TIMING_CMP_170HX_10GB_PCI_DEVICE_ID)
++            {
++                NvU32 config4Before = GPU_REG_RD32(pGpu, CMP_MEM_CONFIG4_BCAST);
++                GPU_REG_WR32(pGpu, CMP_MEM_CONFIG4_BCAST, 0xc4028033U);
++                NvU32 config4After = GPU_REG_RD32(pGpu, CMP_MEM_CONFIG4_BCAST);
++                NV_PRINTF(LEVEL_ERROR,
++                          "CMP_MEM_CONFIG4_FORCE: before=0x%08x target=0xc4028033 after=0x%08x\n",
++                          config4Before, config4After);
++            }
++
+             NV_PRINTF(LEVEL_ERROR,
+                       "SEC2_DEBUG: POST-WRITE SS0=0x%08x SS1=0x%08x "
+                       "CFG1=0x%08x LMR=0x%08x (devId=0x%x)\n",

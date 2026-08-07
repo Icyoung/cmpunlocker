@@ -30,7 +30,7 @@ Instead of modifying OTP (which is physically locked), cmpunlocker intercepts th
 2. **Configure memory geometry** — write CFG1 (config) and LMR (LM Request) registers to unlock full HBM2e capacity
 3. **Enable all SMs** — write SS0 and SS1 (Suspension State) to re-enable disabled SM clusters
 4. **Retrain the PCIe link** — request and retrain to Gen 2 now that the XP3G PLMs are open
-5. **Finalize** — perform late PMA (Power Management Array) adjustments and allow normal boot to continue
+5. **Finalize safely** — preserve all GSP/WPR/internal reserved regions, audit the final FB/PMA layout, and allow normal boot to continue
 
 ---
 
@@ -79,25 +79,47 @@ applied; it is never selected automatically.
 
 SS0 and SS1 are Suspension State registers that control which SM clusters are active:
 
-- Stock firmware sets these to disable ~50% of the SMs
-- cmpunlocker writes `0xffffffff` to both, enabling all clusters
-- The GPU can then use full compute throughput
+- Stock firmware sets these to throttle compute (FMA path ~0.4 TFLOPS FP32, tensor ~6 TFLOPS)
+- cmpunlocker writes SS0=`0x88888888`, SS1=`0x00000008`, restoring full throughput
+- Verified by runtime A/B (BAR0 write + cuBLAS bench, 2026-08-07): FP32 0.39→12.28,
+  FP16 6.26→160.28, BF16 6.15→172.08, FP64 0.20→11.87 TFLOPS
+
+**Do not substitute values dumped from a real A100** (`0x00112011`/`0x00000002`).
+The SS bit meaning is OTP/fuse-dependent; on CMP silicon the A100 values re-enable
+the throttle (this mistake shipped briefly as the B4 experiment in
+`ss-config4-override.patch` and silently re-nerfed compute while leaving the
+80GB crash unchanged).
 
 Expected dmesg output:
 ```
-SEC2_DEBUG: SS0 = 0xffffffff
-SEC2_DEBUG: SS1 = 0xffffffff
+SEC2_DEBUG: POST-WRITE SS0=0x88888888 SS1=0x00000008
 ```
 
 ---
 
-### FB & PMA Adjustments
+### FB, PMA, and WPR Safety
 
-After core reconfiguration, the frame buffer (FB) and power management array (PMA) are adjusted to support the new memory geometry and active SMs:
+GSP-RM reports public, internal-heap, and firmware-reserved framebuffer regions.
+The WPR and GSP firmware heap are part of the reserved top-of-framebuffer
+carveout and must never be returned to CUDA.
 
-- FB is resized to reflect the new memory capacity
-- PMA is reconfigured for the enabled SM clusters
-- These changes are performed in "late PMA" phase, near the end of boot
+`wpr-safe-r3` enforces a simple ownership rule:
+
+- the unlock may change CFG1, LMR, and the target framebuffer length;
+- normal RM/PMA initialization decides which non-reserved regions are allocatable;
+- cmpunlocker never calls `pmaRegisterRegion()` on a `bRsvdRegion`;
+- cmpunlocker never clears `bRsvdRegion`, `rsvdSize`, or internal-heap flags;
+- post-initialization code is diagnostic-only and prints `CMP_MEM_REGION`,
+  `CMP_MEM_PMA_REGION`, and `CMP_MEM_SAFE_PMA` records without mutating
+  allocator state;
+- PMA descriptor coverage is logged for correlation, but is not treated as
+  proof that reserved/pinned pages are available to clients.
+
+A previous experimental late-PMA extension violated this rule by registering the
+highest reserved region as public memory. On an 80GB profile that region
+contained the running GSP WPR, causing GSP timeouts and recovery Xids at maximum
+allocation pressure. That extension is removed, not clamped to a fixed address,
+because WPR placement changes with geometry and firmware version.
 
 ---
 
@@ -137,7 +159,7 @@ Host2Jtag register access is locked behind the same class of PLM permission as t
    - CFG1/LMR written (memory geometry)
    - SS0/SS1 written (compute state)
    - PCIe link retrained to Gen 2
-   - Late PMA adjustments applied
+   - WPR/PMA ownership preserved; read-only layout diagnostics emitted
 4. **GSP boot completes** → GPU is now fully unlocked
 5. **Driver ready** → `nvidia-smi` shows 65536 MiB (8GB), 40960 MiB (stable 10GB), or the explicitly selected experimental 80GB target at PCIe Gen 2, with JTAG register access available
 
@@ -154,7 +176,7 @@ The unlock is applied by **patched kernel modules**, not a userspace daemon:
 
 Card profile is stored in `/lib/modules/$(uname -r)/updates/cmpunlocker/card_profile`
 at install time and used during every boot. Experimental builds also write
-`experimental_80gb=1` and retain the per-GPU target in `gpu_inventory`.
+`experimental_80gb=1`, `safety_revision=wpr-safe-r3`, and retain the per-GPU target in `gpu_inventory`.
 
 ---
 
@@ -165,3 +187,4 @@ at install time and used during every boot. Experimental builds also write
 - **Linux only** — GSP boot path is Linux-specific (Windows WDDM driver is fundamentally different)
 - **Kernel headers required** — modules must be compiled for the running kernel version
 - **80GB is experimental** — the profile establishes coherent compiled geometry and reported capacity, not long-duration workload stability
+- **Reported capacity is not all user-allocatable** — WPR, firmware heap, metadata, and RM reservations intentionally remain unavailable to CUDA

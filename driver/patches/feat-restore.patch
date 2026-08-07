@@ -1,0 +1,42 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -5021,6 +5021,39 @@
+                           config4Before, config4After);
+             }
+ 
++            /*
++             * FEAT register restoration: R3's PLM-open loop pollutes
++             * FEAT08/0c/10/14/28 with debug patterns.  Restore them
++             * to A100-80GB real values (dumped from real A100 card at
++             * PCI 0x20B5).  Both 8GB and 10GB SKUs get these writes.
++             * On 8GB SKU this is a no-op-equivalent (already stable).
++             * On 10GB SKU targeting 80 GiB this is our hypothesis for
++             * the missing higher-order FBPA mapping.
++             */
++            {
++                NvU32 feat08Before = GPU_REG_RD32(pGpu, 0x00823808U);
++                NvU32 feat0cBefore = GPU_REG_RD32(pGpu, 0x0082380cU);
++                NvU32 feat10Before = GPU_REG_RD32(pGpu, 0x00823810U);
++                NvU32 feat14Before = GPU_REG_RD32(pGpu, 0x00823814U);
++                NvU32 feat28Before = GPU_REG_RD32(pGpu, 0x00823828U);
++
++                GPU_REG_WR32(pGpu, 0x00823808U, 0x01000282U);
++                GPU_REG_WR32(pGpu, 0x0082380cU, 0x00000101U);
++                GPU_REG_WR32(pGpu, 0x00823810U, 0x00100105U);
++                GPU_REG_WR32(pGpu, 0x00823814U, 0xef8ff100U);
++                GPU_REG_WR32(pGpu, 0x00823828U, 0x00000007U);
++
++                NV_PRINTF(LEVEL_ERROR,
++                          "CMP_MEM_FEAT_RESTORE: "
++                          "FEAT08 %08x->%08x  FEAT0c %08x->%08x  FEAT10 %08x->%08x  "
++                          "FEAT14 %08x->%08x  FEAT28 %08x->%08x\n",
++                          feat08Before, GPU_REG_RD32(pGpu, 0x00823808U),
++                          feat0cBefore, GPU_REG_RD32(pGpu, 0x0082380cU),
++                          feat10Before, GPU_REG_RD32(pGpu, 0x00823810U),
++                          feat14Before, GPU_REG_RD32(pGpu, 0x00823814U),
++                          feat28Before, GPU_REG_RD32(pGpu, 0x00823828U));
++            }
++
+             NV_PRINTF(LEVEL_ERROR,
+                       "SEC2_DEBUG: POST-WRITE SS0=0x%08x SS1=0x%08x "
+                       "CFG1=0x%08x LMR=0x%08x (devId=0x%x)\n",

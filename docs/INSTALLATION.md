@@ -42,7 +42,26 @@ machine remains on the stable 64GB geometry. The installer prints an
 experimental warning and records the selected profile under
 `/lib/modules/$(uname -r)/updates/cmpunlocker/`.
 
-Then perform a cold reboot (full power off, then boot).
+Then perform a cold reboot (full power off, then boot). Before stress testing,
+verify that the new module is active and capture a baseline bundle:
+
+```bash
+sudo ./verify.sh
+sudo ./tools/collect-diagnostics.sh
+```
+
+`verify.sh` rejects an installed module that still contains the removed
+late-PMA extension. The build installs modules but does not hot-reload them by
+default. Do not rely on a warm module reload after replacing an unsafe build;
+use a complete power-off/cold boot. `CMPUNLOCKER_ALLOW_HOT_RELOAD=1` exists only
+as a developer override and is not valid for stress qualification.
+
+For the first workload after the cold boot:
+
+```bash
+sudo ./tools/run-monitored.sh --interval=1 --output=/root/cmp-logs -- \
+  python3 your_workload.py
+```
 
 ## Uninstall
 

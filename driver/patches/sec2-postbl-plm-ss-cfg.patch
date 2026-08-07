@@ -13,7 +13,7 @@ diff -Naur a/src/nvidia/generated/g_kernel_gsp_nvoc.h b/src/nvidia/generated/g_k
 diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
 --- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c	2026-07-18 11:26:26.827164897 -0700
 +++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c	2026-07-18 11:26:26.828254361 -0700
-@@ -102,6 +102,23 @@
+@@ -102,6 +102,88 @@
  
  #include "crashcat/crashcat_report.h"
  
@@ -33,6 +33,71 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
 +    NvU32 devId = pGpu->idInfo.PCIDeviceID >> 16;
 +    return (devId == SEC2_POSTBL_TIMING_CMP_170HX_8GB_PCI_DEVICE_ID ||
 +            devId == SEC2_POSTBL_TIMING_CMP_170HX_10GB_PCI_DEVICE_ID);
++}
++
++#define CMP_MEM_FBPA_BASE              0x00900000U
++#define CMP_MEM_FBPA_STRIDE            0x00004000U
++#define CMP_MEM_FBPA_CFG1_OFFSET       0x00000204U
++#define CMP_MEM_FBPA_CSTATUS_OFFSET    0x0000020cU
++#define CMP_MEM_FBPA_CONFIG4_OFFSET    0x000002a0U
++#define CMP_MEM_FBPA_COUNT             24U
++#define CMP_MEM_CFG1_BCAST             0x009a0204U
++#define CMP_MEM_CSTATUS_BCAST          0x009a020cU
++#define CMP_MEM_CONFIG4_BCAST          0x009a02a0U
++#define CMP_MEM_LMR                    0x00100ce0U
++#define CMP_MEM_L2_LTC_DECODE          0x0017e2a0U
++#define CMP_MEM_FBPA_DISABLE           0x00820368U
++#define CMP_MEM_FBP_DISABLE            0x00820364U
++#define CMP_MEM_ACTIVE_LTCS            0x00100800U
++
++static void
++_kgspCmpDumpGeometry(OBJGPU *pGpu, const char *phase)
++{
++    NvU32 i;
++    NvU32 liveFbpas = 0;
++    NvU32 fbpaDisable = GPU_REG_RD32(pGpu, CMP_MEM_FBPA_DISABLE);
++
++    NV_PRINTF(LEVEL_ERROR,
++              "CMP_MEM_GEOMETRY: phase=%s devId=0x%x cfg1=0x%08x "
++              "lmr=0x%08x l2Decode=0x%08x cstatusBroadcast=0x%08x "
++              "config4Broadcast=0x%08x fbpaDisable=0x%08x "
++              "fbpDisable=0x%08x activeLtcs=0x%08x\n",
++              phase, pGpu->idInfo.PCIDeviceID >> 16,
++              GPU_REG_RD32(pGpu, CMP_MEM_CFG1_BCAST),
++              GPU_REG_RD32(pGpu, CMP_MEM_LMR),
++              GPU_REG_RD32(pGpu, CMP_MEM_L2_LTC_DECODE),
++              GPU_REG_RD32(pGpu, CMP_MEM_CSTATUS_BCAST),
++              GPU_REG_RD32(pGpu, CMP_MEM_CONFIG4_BCAST),
++              fbpaDisable,
++              GPU_REG_RD32(pGpu, CMP_MEM_FBP_DISABLE),
++              GPU_REG_RD32(pGpu, CMP_MEM_ACTIVE_LTCS));
++
++    for (i = 0; i < CMP_MEM_FBPA_COUNT; i++)
++    {
++        NvU32 base;
++
++        if ((fbpaDisable & (1U << i)) != 0)
++        {
++            NV_PRINTF(LEVEL_ERROR,
++                      "CMP_MEM_FBPA: phase=%s idx=%u disabled=1\n",
++                      phase, i);
++            continue;
++        }
++
++        liveFbpas++;
++        base = CMP_MEM_FBPA_BASE + i * CMP_MEM_FBPA_STRIDE;
++        NV_PRINTF(LEVEL_ERROR,
++                  "CMP_MEM_FBPA: phase=%s idx=%u disabled=0 cfg1=0x%08x "
++                  "cstatus=0x%08x config4=0x%08x\n",
++                  phase, i,
++                  GPU_REG_RD32(pGpu, base + CMP_MEM_FBPA_CFG1_OFFSET),
++                  GPU_REG_RD32(pGpu, base + CMP_MEM_FBPA_CSTATUS_OFFSET),
++                  GPU_REG_RD32(pGpu, base + CMP_MEM_FBPA_CONFIG4_OFFSET));
++    }
++
++    NV_PRINTF(LEVEL_ERROR,
++              "CMP_MEM_FBPA_SUMMARY: phase=%s live=%u disabled=%u\n",
++              phase, liveFbpas, CMP_MEM_FBPA_COUNT - liveFbpas);
 +}
  
  struct MIG_CI_UPDATE_CALLBACK_PARAMS
@@ -64,7 +129,7 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
      {
          // If the new FB layout requires a scrubber ucode to scrub additional space, prepare it now
          NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, _kgspPrepareScrubberImageIfNeeded(pGpu, pKernelGsp));
-@@ -4821,6 +4849,124 @@
+@@ -4821,6 +4849,134 @@
      // Setup arguments for bootstrapping GSP
      NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, kgspPrepareForBootstrap_HAL(pGpu, pKernelGsp, KGSP_BOOT_MODE_NORMAL));
  
@@ -166,6 +231,8 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
 +                      devId);
 +        }
 +
++        _kgspCmpDumpGeometry(pGpu, "post_host_write");
++
 +        plmStatus = kgspSec2PostblTimingRebuildStockSignature(pGpu, pKernelGsp);
 +        if (plmStatus != NV_OK)
 +        {
@@ -184,12 +251,20 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
 +                  pKernelGsp->pWprMeta->gspFwWprEnd,
 +                  pKernelGsp->pWprMeta->gspFwHeapOffset,
 +                  pKernelGsp->pWprMeta->gspFwHeapSize);
++        NV_PRINTF(LEVEL_ERROR,
++                  "CMP_MEM_WPR: fbSize=0x%016llx wprStart=0x%016llx "
++                  "wprEnd=0x%016llx heapOffset=0x%016llx heapSize=0x%016llx\n",
++                  pKernelGsp->pWprMeta->fbSize,
++                  pKernelGsp->pWprMeta->gspFwWprStart,
++                  pKernelGsp->pWprMeta->gspFwWprEnd,
++                  pKernelGsp->pWprMeta->gspFwHeapOffset,
++                  pKernelGsp->pWprMeta->gspFwHeapSize);
 +    }
 +
      // Release the API lock if relaxed locking for parallel init is enabled
      NvBool bRelaxedLocking = _kgspShouldRelaxGspInitLocking(pGpu);
      if (bRelaxedLocking)
-@@ -5164,6 +5289,53 @@
+@@ -5164,6 +5289,73 @@
          goto done;
      }
  
@@ -237,6 +312,26 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
 +                          "SEC2_DEBUG: static-info AFTER: fb_length=0x%llx last_limit=0x%llx\n",
 +                          pGSCI->fb_length, pLastRegion->limit);
 +            }
++
++            {
++                NvU32 regionIdx;
++                NvU32 safeRegionCount = NV_MIN(
++                    numRegions, NV2080_CTRL_CMD_FB_GET_FB_REGION_INFO_MAX_ENTRIES);
++
++                for (regionIdx = 0; regionIdx < safeRegionCount; regionIdx++)
++                {
++                    NV2080_CTRL_CMD_FB_GET_FB_REGION_FB_REGION_INFO *pRegion =
++                        &pFbRegionInfoParams->fbRegion[regionIdx];
++                    NV_PRINTF(LEVEL_ERROR,
++                              "CMP_MEM_GSP_REGION: idx=%u base=0x%llx limit=0x%llx "
++                              "reserved=0x%llx compressed=%u iso=%u performance=%u\n",
++                              regionIdx, pRegion->base, pRegion->limit,
++                              pRegion->reserved, pRegion->supportCompressed,
++                              pRegion->supportISO, pRegion->performance);
++                }
++            }
++
++            _kgspCmpDumpGeometry(pGpu, "post_gsp_static_info");
 +        }
 +    }
 +

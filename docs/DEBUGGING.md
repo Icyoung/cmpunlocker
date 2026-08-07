@@ -18,6 +18,52 @@ Before you go asking in the Discord for help, here is a FAQ you should take a lo
 
 ---
 
+## Verify the WPR/PMA safety fix before any stress test
+
+Run:
+
+```bash
+sudo ./verify.sh
+```
+
+The installed core module must contain `CMP_MEM_SAFE_PMA` and must not contain
+`SEC2_DEBUG_LATE_PMA`. The current boot must also have no `late PMA extension
+status` or `SEC2_DEBUG_LATE_PMA: registering` line. `verify.sh` fails closed if
+any of these checks indicate the old module is active.
+
+Useful manual checks:
+
+```bash
+strings /lib/modules/$(uname -r)/updates/cmpunlocker/nvidia.ko \
+  | grep -E 'CMP_MEM_SAFE_PMA|SEC2_DEBUG_LATE_PMA'
+sudo dmesg | grep -E 'CMP_MEM_|SEC2_DEBUG|Xid|UVM|GSP'
+```
+
+After installation and before a stress run, capture a baseline:
+
+```bash
+sudo ./tools/collect-diagnostics.sh
+```
+
+For the actual workload, prefer the monitored runner:
+
+```bash
+sudo ./tools/run-monitored.sh --interval=1 --output=/root/cmp-logs -- \
+  python3 your_workload.py
+```
+
+It records current-boot kernel messages, periodic VRAM/temperature/power/clock
+telemetry, process state, workload output, and pre/post diagnostic bundles. The
+collector wraps `nvidia-smi` in timeouts, so final collection does not wait
+indefinitely on an unresponsive GPU.
+
+`pmaDescriptorCovers=1` or `overlapsWpr=1` in a diagnostic line is not by itself
+a failure: a broad PMA region descriptor may contain pages that remain pinned.
+The safety property is that cmpunlocker no longer performs a late
+`pmaRegisterRegion()` or clears reserved-region flags.
+
+---
+
 ## Experimental 80GB reports capacity but workloads fail
 
 - Confirm the compiled profile is `10gb80` or `mixed80`:
@@ -59,5 +105,5 @@ If you have tried the above steps and are still having issues, please follow the
 2. Provide the following information in your ticket:
    - Your operating system and version
    - Your GPU model and driver version
-   - The output of `sudo dmesg | grep SEC2_DEBUG`
+   - The archive produced by `sudo ./tools/collect-diagnostics.sh`
    - Latest install log (if applicable)

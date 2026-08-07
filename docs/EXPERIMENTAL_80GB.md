@@ -34,11 +34,38 @@ actually compiled into `nvidia.ko`:
 `driver/apply_profile.py` performs and verifies this rewrite. Merely editing
 `common/constants.yaml` does not alter the compiled driver.
 
+## WPR/PMA safety
+
+This revision removes the unsafe late-PMA extension entirely. It does not trim a
+hard-coded top address. Instead, all regions marked reserved by GSP/RM remain
+reserved under every geometry and firmware placement.
+
+Expected current-boot diagnostics include:
+
+```text
+CMP_MEM_WPR: ... wprStart=... wprEnd=... heapOffset=... heapSize=...
+CMP_MEM_GSP_REGION: ... reserved=...
+CMP_MEM_REGION: ... rsvd=1 ...
+CMP_MEM_SAFE_PMA: ... late_extension=disabled ...
+```
+
+There must be no `SEC2_DEBUG_LATE_PMA` or `late PMA extension status` line.
+The amount CUDA can allocate is expected to be below the raw 81920 MiB capacity
+because WPR and other driver reservations are intentionally excluded.
+
+PMA region descriptors are intentionally logged as well. Descriptor overlap
+with WPR is diagnostic only because PMA may represent a broad physical range
+while reservation/pinning keeps individual pages unavailable. Do not interpret
+`pmaDescriptorCovers=1` as evidence that CUDA can allocate that range.
+
 ## Verification
 
 ```bash
 sudo ./verify.sh
-sudo dmesg | grep SEC2_DEBUG
+sudo dmesg | grep -E 'SEC2_DEBUG|CMP_MEM_'
+sudo ./tools/collect-diagnostics.sh
+sudo ./tools/run-monitored.sh --interval=1 --output=/root/cmp-logs -- \
+  python3 your_workload.py
 ```
 
 For an experimental 2082 card, retained logs should include a readback similar
@@ -74,8 +101,18 @@ assuming a warm reboot cleared all GSP/HBM state.
 
 ## Implementation boundaries
 
-This port deliberately reuses the existing 610.43.0x unlock path, including the
-late-PMA extension, BAR0/PRAMIN clamp, CE scrub workarounds, persistent software
-state, and runtime device-ID selection. It changes only the 2082 target geometry
-when the experimental profile is explicitly selected. Default 40GB and 64GB
-builds remain byte-for-byte equivalent at the geometry-selection layer.
+This revision reuses the 610.43.0x geometry, BAR0/PRAMIN, CE-scrub,
+persistent-state, PCIe, and runtime device-ID patches. It explicitly does **not**
+reuse the old late-PMA extension. The replacement `memory-layout-safety.patch`
+keeps the CE virtual-mode workaround but makes all allocator inspection
+read-only.
+
+The new logging is designed to separate future failures into:
+
+1. geometry/decode (`CMP_MEM_GEOMETRY`, `CMP_MEM_FBPA`);
+2. GSP/WPR placement (`CMP_MEM_WPR`, `CMP_MEM_GSP_REGION`);
+3. CPU-RM/PMA ownership (`CMP_MEM_REGION`, `CMP_MEM_SAFE_PMA`);
+4. subsequent Xid/UVM/GSP failure captured by the diagnostics bundle.
+
+Default 40GB and 64GB geometry constants remain unchanged. The safety fix applies
+to both stable and experimental profiles.

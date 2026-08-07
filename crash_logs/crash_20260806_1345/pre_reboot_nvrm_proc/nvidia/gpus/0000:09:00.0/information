@@ -1,0 +1,11 @@
+Model: 		 Unknown
+IRQ:   		 194
+GPU UUID: 	 GPU-9d3a9d0f-08ac-a3e1-c3ed-0917abd30966
+Video BIOS: 	 92.00.66.00.02
+Bus Type: 	 PCIe
+DMA Size: 	 47 bits
+DMA Mask: 	 0x7fffffffffff
+Bus Location: 	 0000:09:00.0
+Device Minor: 	 0
+GPU Firmware: 	 610.43.02
+GPU Excluded:	 No

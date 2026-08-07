@@ -1,0 +1,53 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -4891,6 +4891,50 @@
+                   "WPR2 already up before GSP boot; continuing for recovery\n");
+     }
+ 
++    //
++    // cmpunlocker P1a: EARLY LMR/CFG1 write so kgspPopulateWprMeta_HAL reads
++    // the unlocked fbSize (80 GiB) rather than the stock 10 GiB.  Without this,
++    // WPR meta seen by the booter loop encodes only 10 GiB; even though R3
++    // re-populates to 80 GiB after the booter loop, internal GSP tables built
++    // during booter+bootstrap remain sized for 10 GiB and any access above
++    // ~40 GiB crashes GSP with Xid 1 illegal instruction @ pc:0x5b2b940.
++    //
++    // These writes may fail silently if the required PLMs are still closed at
++    // this point; if so the values will be re-written by the existing PLM open
++    // loop later.  We log both attempts so we can compare via dmesg.
++    //
++    if (_kgspSec2PostblTimingEnabled(pGpu))
++    {
++        NvU32 devId = pGpu->idInfo.PCIDeviceID >> 16;
++        NvU32 cfg1Target;
++        NvU32 lmrTarget;
++        NvU32 cfg1Before, lmrBefore, cfg1After, lmrAfter;
++
++        if (devId == SEC2_POSTBL_TIMING_CMP_170HX_8GB_PCI_DEVICE_ID)
++        {
++            cfg1Target = 0x02779000U;
++            lmrTarget  = 0x0000020BU;
++        }
++        else
++        {
++            cfg1Target = 0x02779000U;
++            lmrTarget  = 0x0000028BU;
++        }
++
++        cfg1Before = GPU_REG_RD32(pGpu, CMP_MEM_CFG1_BCAST);
++        lmrBefore  = GPU_REG_RD32(pGpu, CMP_MEM_LMR);
++        GPU_REG_WR32(pGpu, CMP_MEM_CFG1_BCAST, cfg1Target);
++        GPU_REG_WR32(pGpu, CMP_MEM_LMR,        lmrTarget);
++        cfg1After  = GPU_REG_RD32(pGpu, CMP_MEM_CFG1_BCAST);
++        lmrAfter   = GPU_REG_RD32(pGpu, CMP_MEM_LMR);
++
++        NV_PRINTF(LEVEL_ERROR,
++                  "CMP_MEM_EARLY_WRITE: devId=0x%x cfg1 before=0x%08x target=0x%08x "
++                  "after=0x%08x lmr before=0x%08x target=0x%08x after=0x%08x\n",
++                  devId, cfg1Before, cfg1Target, cfg1After,
++                  lmrBefore, lmrTarget, lmrAfter);
++    }
++
+     // Populate WPR meta structure (requires knowing FB size on dGPU, which depends on GFW_BOOT)
+     NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, kgspPopulateWprMeta_HAL(pGpu, pKernelGsp, pGspFw));
+ 

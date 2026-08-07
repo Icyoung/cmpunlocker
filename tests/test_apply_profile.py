@@ -77,6 +77,38 @@ class ApplyProfileTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 module.apply_profile(path, "10gb80")
 
+
+    def test_real_sec2_patch_new_side_rewrites(self) -> None:
+        patch_path = ROOT / "driver" / "patches" / "sec2-postbl-plm-ss-cfg.patch"
+        lines = patch_path.read_text(encoding="utf-8").splitlines()
+        in_kernel_gsp = False
+        new_side: list[str] = []
+        for line in lines:
+            if line.startswith("+++ b/"):
+                in_kernel_gsp = line.startswith(
+                    "+++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
+                )
+                continue
+            if line.startswith("diff -Naur ") or line.startswith("--- a/"):
+                if line.startswith("diff -Naur "):
+                    in_kernel_gsp = False
+                continue
+            if in_kernel_gsp and line and line[0] in " +":
+                new_side.append(line[1:])
+
+        reconstructed = "\n".join(new_side) + "\n"
+        self.assertIn("cfg1Value = 0x02669000U;", reconstructed)
+        self.assertIn("lmrValue  = 0x0000028AU;", reconstructed)
+        self.assertIn(": 0x0000000A00000000ULL;", reconstructed)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "kernel_gsp.c"
+            path.write_text(reconstructed, encoding="utf-8")
+            module.apply_profile(path, "10gb80")
+            rewritten = path.read_text(encoding="utf-8")
+            self.assertIn("lmrValue  = 0x0000028BU;", rewritten)
+            self.assertIn(": 0x0000001400000000ULL;", rewritten)
+
     def test_duplicate_geometry_blocks_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "kernel_gsp.c"

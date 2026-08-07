@@ -14,6 +14,8 @@ TARBALL_URL="https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags
 KVER="$(uname -r)"
 KSRC="/lib/modules/${KVER}/build"
 INSTALL_MOD_DIR="/lib/modules/${KVER}/updates/cmpunlocker"
+SAFETY_REVISION="wpr-safe-r3"
+ALLOW_HOT_RELOAD="${CMPUNLOCKER_ALLOW_HOT_RELOAD:-0}"
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -39,18 +41,24 @@ version_supported() {
 [[ -n "${VERSION}" ]] || die "No driver version set (driver/VERSION empty and CMPUNLOCKER_DRIVER_VERSION unset)"
 version_supported "${VERSION}" || die "Unsupported driver version '${VERSION}' (supported: ${SUPPORTED_VERSIONS[*]})"
 [[ -d "${PATCH_DIR}" ]] || die "Missing patches directory: ${PATCH_DIR}"
+[[ ! -e "${PATCH_DIR}/late-pma.patch" ]] || die "Unsafe legacy patch must be removed: ${PATCH_DIR}/late-pma.patch"
 [[ -d "${KSRC}" ]] || die "Kernel headers not found at ${KSRC}. Install linux-headers-${KVER} (or kernel-devel)."
 command -v python3 &>/dev/null || die "python3 is required to apply the card memory profile"
 command -v sha256sum &>/dev/null || die "sha256sum is required"
+[[ "${ALLOW_HOT_RELOAD}" == "0" || "${ALLOW_HOT_RELOAD}" == "1" ]] || die "CMPUNLOCKER_ALLOW_HOT_RELOAD must be 0 or 1"
 [[ -x "${SCRIPT_DIR}/apply_profile.py" ]] || die "Missing executable profile helper: ${SCRIPT_DIR}/apply_profile.py"
 info "Building against open-gpu-kernel-modules ${VERSION}"
 
 PATCH_ORDER=(
     sec2-postbl-plm-ss-cfg.patch
     booter-verify.patch
-    late-pma.patch
+    memory-layout-safety.patch
     bar0-pramin-clamp.patch
     ce-scrub-workarounds.patch
+    ss-config4-override.patch
+    feat-restore.patch
+    early-lmr-write-p1a.patch
+    extra-booter-run-p1c.patch
     persistent-sw-state.patch
     pcie-gen2.patch
     pcie-gen2-probe-retrain.patch
@@ -80,6 +88,10 @@ case "${PROFILE}" in
         UNLOCK_LABEL="80GB-experimental"
         EXPERIMENTAL_80GB=1
         ;;
+    10gb64|10GB64|64gb|64GB)
+        PROFILE="10gb64"
+        UNLOCK_LABEL="64GB-experimental"
+        ;;
     mixed|MIXED)
         PROFILE="mixed"
         UNLOCK_LABEL="20c2=64GB,2082=40GB"
@@ -94,7 +106,7 @@ case "${PROFILE}" in
         ;;
 esac
 
-PROFILE_HELPER_HASH="$(sha256sum "${SCRIPT_DIR}/apply_profile.py" | cut -d' ' -f1)"
+PROFILE_HELPER_HASH="$(sha256sum "${SCRIPT_DIR}/apply_profile.py" "${SCRIPT_DIR}/apply_phantom_reserve.py" 2>/dev/null | sha256sum | cut -d' ' -f1)"
 BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:${PATCH_HASH}:${PROFILE_HELPER_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
 
 mkdir -p "${BUILD_ROOT}"
@@ -142,8 +154,34 @@ else
         warn "10 GB -> 80 GB is experimental; capacity recognition does not prove workload stability"
     fi
 
+    # Phantom guard: pin the GSP-metadata collision zone out of the PMA.
+    # No-op on non-0x2082 cards and on profiles whose heap does not cover it.
+    MEM_MGR_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c"
+    [[ -f "${MEM_MGR_C_PREP}" ]] || die "Missing ${MEM_MGR_C_PREP} after patching"
+    info "Applying phantom reserve (PMA pin) to mem_mgr.c..."
+    python3 "${SCRIPT_DIR}/apply_phantom_reserve.py" "${MEM_MGR_C_PREP}"
+    ok "Phantom reserve applied"
+
     printf '%s\n' "${BUILD_STAMP}" > "${STAMP_FILE}"
 fi
+
+GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
+MEM_MGR_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c"
+[[ -f "${GSP_C}" ]] || die "Missing ${GSP_C} after preparation"
+[[ -f "${MEM_MGR_C}" ]] || die "Missing ${MEM_MGR_C} after preparation"
+
+# Always re-run the source gate, including incremental/cache reuse.  The build
+# stamp is not treated as authority if someone modified the extracted tree.
+if grep -R -Fq 'memmgrSec2DebugLateExtendHighPmaRegion' \
+        "${SRC_DIR}/src/nvidia" "${SRC_DIR}/kernel-open" 2>/dev/null ||
+   grep -R -Fq 'SEC2_DEBUG_LATE_PMA:' \
+        "${SRC_DIR}/src/nvidia" "${SRC_DIR}/kernel-open" 2>/dev/null; then
+    die "Prepared NVIDIA source still contains the removed late-PMA extension"
+fi
+if ! grep -Fq 'CMP_MEM_SAFE_PMA: revision=wpr-safe-r3' "${MEM_MGR_C}"; then
+    die "Patched mem_mgr.c lacks the ${SAFETY_REVISION} diagnostic marker"
+fi
+ok "Source safety gate passed: no reserved-region late registration"
 
 cd "${SRC_DIR}"
 mkdir -p "${INSTALL_MOD_DIR}"
@@ -186,11 +224,33 @@ mapfile -t KO_FILES < <(find "${SRC_DIR}" -type f \( \
     ! -path '*/conftest/*' | sort -u)
 [[ ${#KO_FILES[@]} -gt 0 ]] || die "No built nvidia*.ko found"
 
+# Refuse to install a module that still contains the known WPR-corrupting
+# late-PMA path.  The positive marker also prevents accidentally reusing an
+# old cached module that predates this safety revision.
+validated_core=0
+for ko in "${KO_FILES[@]}"; do
+    if [[ "$(basename "${ko}")" != "nvidia.ko" ]]; then
+        continue
+    fi
+    if grep -aFq 'SEC2_DEBUG_LATE_PMA:' "${ko}" ||
+       grep -aFq 'memmgrSec2DebugLateExtendHighPmaRegion' "${ko}"; then
+        die "Unsafe nvidia.ko contains the removed late-PMA extension path: ${ko}"
+    fi
+    if ! grep -aFq 'CMP_MEM_SAFE_PMA: revision=wpr-safe-r3' "${ko}"; then
+        die "nvidia.ko lacks the ${SAFETY_REVISION} safety marker: ${ko}"
+    fi
+    validated_core=$((validated_core + 1))
+done
+(( validated_core > 0 )) || die "Built nvidia.ko was not found for safety validation"
+ok "Validated ${validated_core} nvidia.ko artifact(s): reserved memory is not late-registered with PMA"
+
 for ko in "${KO_FILES[@]}"; do
     base="$(basename "${ko}")"
     install -m 0644 "${ko}" "${INSTALL_MOD_DIR}/${base}"
     ok "Installed ${base}"
 done
+printf '%s\n' "${SAFETY_REVISION}" > "${INSTALL_MOD_DIR}/safety_revision"
+ok "Recorded safety revision ${SAFETY_REVISION}"
 
 depmod -a "${KVER}"
 ok "depmod complete"
@@ -225,7 +285,17 @@ if [[ -n "${resolved}" ]]; then
         warn "Resolved nvidia.ko is not under updates/cmpunlocker/"
     fi
 fi
-info "Attempting to unload NVIDIA modules..."
+if [[ "${ALLOW_HOT_RELOAD}" != "1" ]]; then
+    warn "Hot reload is disabled by default for WPR safety."
+    info "The patched modules are installed but will not be activated in the current GPU boot state."
+    info "Perform a complete power-off: shutdown -h now; remove standby power if the platform retains GPU state."
+    echo ""
+    exit 0
+fi
+
+warn "Developer override CMPUNLOCKER_ALLOW_HOT_RELOAD=1 is active."
+warn "A hot reload cannot prove that stale GSP/WPR state was cleared; do not use it for memory stress qualification."
+info "Attempting the explicitly requested NVIDIA module reload..."
 systemctl stop nvidia-persistenced 2>/dev/null || true
 systemctl stop nvidia-fabricmanager 2>/dev/null || true
 reload_ok=0
@@ -241,7 +311,7 @@ if ! lsmod | grep -q '^nvidia '; then
         modprobe nvidia-uvm 2>/dev/null || true
         modprobe nvidia-drm 2>/dev/null || true
         reload_ok=1
-        ok "Patched NVIDIA modules loaded"
+        ok "Patched NVIDIA modules loaded by developer override"
         running_src="$(cat /sys/module/nvidia/srcversion 2>/dev/null || true)"
         patched_src="$(modinfo -F srcversion "${INSTALL_MOD_DIR}/nvidia.ko" 2>/dev/null || true)"
         if [[ -n "${running_src}" && -n "${patched_src}" && "${running_src}" != "${patched_src}" ]]; then
@@ -252,14 +322,14 @@ if ! lsmod | grep -q '^nvidia '; then
         warn "modprobe failed"
     fi
 else
-    warn "Could not unload nvidia modules"
+    warn "Could not unload all NVIDIA modules"
 fi
+
 echo ""
 if [[ "${reload_ok}" -eq 1 ]]; then
-    ok "Build and install finished. Verify with: nvidia-smi"
-    info "If memory shows stock size, do cold reboot."
+    warn "The module is loaded, but a complete power-off is still required before stress testing."
 else
-    warn "Modules installed but running driver is still stock."
-    info "Perform cold reboot: shutdown -h now"
+    warn "Modules are installed but not active."
 fi
+info "Perform a complete power-off before verification: shutdown -h now"
 echo ""

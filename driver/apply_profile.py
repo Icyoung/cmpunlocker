@@ -43,6 +43,13 @@ EXPERIMENTAL_2082_80GB = Geometry(
     "20c2=64GB / 2082=80GB",
     True,
 )
+EXPERIMENTAL_2082_64GB = Geometry(
+    "0x02779000",
+    "0x0000020B",
+    "0x0000001000000000",
+    "20c2=64GB / 2082=64GB",
+    True,
+)
 
 PROFILES: dict[str, Geometry] = {
     "8gb": STABLE_2082,
@@ -50,6 +57,7 @@ PROFILES: dict[str, Geometry] = {
     "mixed": STABLE_2082,
     "10gb80": EXPERIMENTAL_2082_80GB,
     "mixed80": EXPERIMENTAL_2082_80GB,
+    "10gb64": EXPERIMENTAL_2082_64GB,
 }
 
 # The expressions are intentionally scoped to the exact dual-device blocks

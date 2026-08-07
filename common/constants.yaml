@@ -12,6 +12,11 @@ compute:
   ss0: "0x88888888"
   ss1: "0x00000008"
 
+safety:
+  revision: "wpr-safe-r3"
+  late_pma_extension: false
+  hot_reload_default: false
+
 pcie:
   target_gen: 2
   link_speed_gen2: "0x2"

@@ -1,0 +1,52 @@
+--- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
++++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
+@@ -5054,6 +5054,49 @@
+                       devId);
+         }
+ 
++        //
++        // cmpunlocker P1C: run booter ONCE MORE after LMR/CFG1 have been
++        // updated to the 80 GiB encoding.  Rationale: R3's PLM-open loop
++        // ran booter ~22 times while LMR still encoded 10 GiB, and any
++        // GSP-adjacent hardware state that booter derives from LMR was
++        // therefore latched at 10 GiB.  With FBPA PLM now open we can
++        // re-run booter with the 80 GiB LMR in place, giving it one
++        // chance to re-latch based on the new value before the final
++        // GSP bootstrap.
++        //
++        // We refill the payload to target FBPA (already-open PLM) so
++        // the run is effectively a no-op on protection state, but the
++        // booter's init sequence still executes end-to-end.
++        //
++        {
++            NV_STATUS p1cRefill;
++            NV_STATUS p1cBoot;
++            NvU32 cfg1PostBooter, lmrPostBooter;
++
++            GPU_REG_WR32(pGpu, 0x001fa824U, wpr2Lo);
++            GPU_REG_WR32(pGpu, 0x001fa828U, wpr2Hi);
++
++            p1cRefill = kgspSec2PostblTimingRefillPayload(pGpu, pKernelGsp,
++                0x009a0148U, 0xffffffffU);
++            if (p1cRefill == NV_OK)
++            {
++                p1cBoot = kgspExecuteBooterLoad_HAL(pGpu, pKernelGsp,
++                    memdescGetPhysAddr(pKernelGsp->pWprMetaDescriptor, AT_GPU, 0));
++            }
++            else
++            {
++                p1cBoot = p1cRefill;
++            }
++
++            cfg1PostBooter = GPU_REG_RD32(pGpu, 0x009a0204U);
++            lmrPostBooter  = GPU_REG_RD32(pGpu, 0x00100ce0U);
++
++            NV_PRINTF(LEVEL_ERROR,
++                      "CMP_P1C: extra booter run refill=0x%x boot=0x%x "
++                      "cfg1_now=0x%08x lmr_now=0x%08x\n",
++                      p1cRefill, p1cBoot, cfg1PostBooter, lmrPostBooter);
++        }
++
+         _kgspCmpDumpGeometry(pGpu, "post_host_write");
+ 
+ 
