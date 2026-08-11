@@ -106,8 +106,8 @@ case "${PROFILE}" in
         ;;
 esac
 
-PROFILE_HELPER_HASH="$(sha256sum "${SCRIPT_DIR}/apply_profile.py" "${SCRIPT_DIR}/apply_phantom_reserve.py" 2>/dev/null | sha256sum | cut -d' ' -f1)"
-BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:${PATCH_HASH}:${PROFILE_HELPER_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
+PROFILE_HELPER_HASH="$(sha256sum "${SCRIPT_DIR}/apply_profile.py" "${SCRIPT_DIR}/apply_phantom_reserve.py" "${SCRIPT_DIR}/apply_tail_steer.py" "${SCRIPT_DIR}/apply_tail_steer_host_free.py" "${SCRIPT_DIR}/apply_tail_steer_pin.py" "${SCRIPT_DIR}/apply_pt_log.py" "${SCRIPT_DIR}/apply_pma_alloc_log.py" "${SCRIPT_DIR}/apply_pte_map_log.py" "${SCRIPT_DIR}/apply_wpr_rmw_probe.py" "${SCRIPT_DIR}/apply_gsp_radix3_patch.py" "${SCRIPT_DIR}/apply_gsp_postboot_patch.py" "${SCRIPT_DIR}/apply_booter_debug_force.py" "${SCRIPT_DIR}/apply_booter_imem_dump.py" "${SCRIPT_DIR}/apply_booter_sec2_poll_dump.py" "${SCRIPT_DIR}/apply_sig_dmem_dump.py" "${SCRIPT_DIR}/apply_booter_verify_bypass.py" "${SCRIPT_DIR}/apply_booter_os_postplm_patch.py" "${SCRIPT_DIR}/apply_booter_os_force_mbox.py" "${SCRIPT_DIR}/apply_booter_mbox_forgive.py" "${SCRIPT_DIR}/apply_os_path_write.py" "${SCRIPT_DIR}/apply_sec2_dma_probe.py" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:${PATCH_HASH}:${PROFILE_HELPER_HASH}:${CMPUNLOCKER_PRODUCTION:-0}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
 
 mkdir -p "${BUILD_ROOT}"
 
@@ -150,6 +150,9 @@ else
     info "Applying memory profile ${PROFILE} (${UNLOCK_LABEL}) to compiled C constants..."
     python3 "${SCRIPT_DIR}/apply_profile.py" --source "${GSP_C}" --profile "${PROFILE}"
     ok "Memory profile ${PROFILE}: unlock_geometry=${UNLOCK_LABEL}"
+    info "Applying optional GSP-RM RAM patch hook to kernel_gsp.c..."
+    python3 "${SCRIPT_DIR}/apply_gsp_radix3_patch.py" "${GSP_C}"
+    ok "GSP-RM RAM patch hook applied (RMCmpGspFwPatchA=1 to enable)"
     if [[ "${EXPERIMENTAL_80GB}" -eq 1 ]]; then
         warn "10 GB -> 80 GB is experimental; capacity recognition does not prove workload stability"
     fi
@@ -161,6 +164,85 @@ else
     info "Applying phantom reserve (PMA pin) to mem_mgr.c..."
     python3 "${SCRIPT_DIR}/apply_phantom_reserve.py" "${MEM_MGR_C_PREP}"
     ok "Phantom reserve applied"
+
+    # Tail-steer (P0/P1): log regionTag; optionally squeeze GSP PMA free space
+    # into a FB-tail corridor (RMCmpTailSteer=1) and pin that corridor on host.
+    info "Applying tail-steer probe to kernel_gsp.c..."
+    python3 "${SCRIPT_DIR}/apply_tail_steer.py" "${GSP_C}"
+    GSP_CLIENT_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr_gsp_client.c"
+    [[ -f "${GSP_CLIENT_C_PREP}" ]] || die "Missing ${GSP_CLIENT_C_PREP} after patching"
+    info "Applying tail-steer host-free reopen to mem_mgr_gsp_client.c..."
+    python3 "${SCRIPT_DIR}/apply_tail_steer_host_free.py" "${GSP_CLIENT_C_PREP}"
+    info "Applying optional tail-steer host pin to mem_mgr.c..."
+    python3 "${SCRIPT_DIR}/apply_tail_steer_pin.py" "${MEM_MGR_C_PREP}"
+    ok "Tail-steer helpers applied (RMCmpTailSteer=1; host-free reopen; RMCmpTailPin optional)"
+
+    GSP_TU102_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c"
+    GSP_GA100_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_ga100.c"
+    [[ -f "${GSP_TU102_C_PREP}" ]] || die "Missing ${GSP_TU102_C_PREP} after patching"
+    [[ -f "${GSP_GA100_C_PREP}" ]] || die "Missing ${GSP_GA100_C_PREP} after patching"
+
+    # Debug instrumentation (2026-08-08 32G-wrap hunt): log every page-table
+    # page allocation (PA + VA range) and every large PMA allocation.
+    # Skipped entirely in production builds (CMPUNLOCKER_PRODUCTION=1): these
+    # are pure loggers that fire at runtime on every allocation/map.
+    if [[ "${CMPUNLOCKER_PRODUCTION:-0}" != "1" ]]; then
+    GMMU_WALK_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/mmu/gmmu_walk.c"
+    PMA_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/mem_mgr/phys_mem_allocator/phys_mem_allocator.c"
+    [[ -f "${GMMU_WALK_C_PREP}" ]] || die "Missing ${GMMU_WALK_C_PREP} after patching"
+    [[ -f "${PMA_C_PREP}" ]] || die "Missing ${PMA_C_PREP} after patching"
+    info "Applying page-table allocation logging to gmmu_walk.c..."
+    python3 "${SCRIPT_DIR}/apply_pt_log.py" "${GMMU_WALK_C_PREP}"
+    info "Applying PMA allocation logging to phys_mem_allocator.c..."
+    python3 "${SCRIPT_DIR}/apply_pma_alloc_log.py" "${PMA_C_PREP}"
+    MMU_WALK_MAP_C_PREP="${SRC_DIR}/src/nvidia/src/libraries/mmu/mmu_walk_map.c"
+    VMA_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/mem_mgr/arch/maxwell/virt_mem_allocator_gm107.c"
+    [[ -f "${MMU_WALK_MAP_C_PREP}" ]] || die "Missing ${MMU_WALK_MAP_C_PREP} after patching"
+    [[ -f "${VMA_C_PREP}" ]] || die "Missing ${VMA_C_PREP} after patching"
+    info "Applying PTE map logging to mmu_walk_map.c + virt_mem_allocator_gm107.c..."
+    python3 "${SCRIPT_DIR}/apply_pte_map_log.py" "${MMU_WALK_MAP_C_PREP}" "${VMA_C_PREP}"
+    info "Applying post-BooterLoad WPR RMW probe to kernel_gsp_tu102.c..."
+    python3 "${SCRIPT_DIR}/apply_wpr_rmw_probe.py" "${GSP_TU102_C_PREP}"
+    fi
+    if [[ "${CMPUNLOCKER_STRIP_POST0808:-0}" != "1" ]]; then
+    info "Applying optional post-scheduling GSP patch A to mem_mgr.c..."
+    python3 "${SCRIPT_DIR}/apply_gsp_postboot_patch.py" "${MEM_MGR_C_PREP}" "${GSP_C}" "${GSP_TU102_C_PREP}"
+    info "Applying optional Booter DBG force hook to kernel_gsp_ga100.c + kernel_gsp_tu102.c..."
+    python3 "${SCRIPT_DIR}/apply_booter_debug_force.py" "${GSP_GA100_C_PREP}" "${GSP_TU102_C_PREP}"
+    OS_IF_C_PREP="${SRC_DIR}/kernel-open/nvidia/os-interface.c"
+    GSP_BOOTER_TU102_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_booter_tu102.c"
+    [[ -f "${OS_IF_C_PREP}" ]] || die "Missing ${OS_IF_C_PREP} after patching"
+    [[ -f "${GSP_BOOTER_TU102_C_PREP}" ]] || die "Missing ${GSP_BOOTER_TU102_C_PREP} after patching"
+    info "Applying os_cmpWritePathFile helper to os-interface.c..."
+    python3 "${SCRIPT_DIR}/apply_os_path_write.py" "${OS_IF_C_PREP}"
+    GSP_FALCON_TU102_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_falcon_tu102.c"
+    GSP_FALCON_GA102_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/arch/ampere/kernel_gsp_falcon_ga102.c"
+    [[ -f "${GSP_FALCON_TU102_C_PREP}" ]] || die "Missing ${GSP_FALCON_TU102_C_PREP} after patching"
+    [[ -f "${GSP_FALCON_GA102_C_PREP}" ]] || die "Missing ${GSP_FALCON_GA102_C_PREP} after patching"
+    info "Applying optional SEC2 post-halt dump to kernel_gsp_falcon_tu102.c (GA100 uses TU102 HAL)..."
+    python3 "${SCRIPT_DIR}/apply_booter_sec2_poll_dump.py" "${GSP_FALCON_TU102_C_PREP}"
+    GSP_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
+    [[ -f "${GSP_C_PREP}" ]] || die "Missing ${GSP_C_PREP} after patching"
+    info "Applying optional sig DMEM template dump to kernel_gsp.c..."
+    python3 "${SCRIPT_DIR}/apply_sig_dmem_dump.py" "${GSP_C_PREP}"
+    info "Applying optional DMEM slot experiment to kernel_gsp.c..."
+    python3 "${SCRIPT_DIR}/apply_booter_verify_bypass.py" "${GSP_C_PREP}"
+    info "Applying optional post-PLM Booter OS skip-app patch to kernel_gsp_tu102.c..."
+    python3 "${SCRIPT_DIR}/apply_booter_os_postplm_patch.py" "${GSP_TU102_C_PREP}"
+    info "Applying optional post-PLM Booter OS force-mbox0 patch to kernel_gsp_tu102.c..."
+    python3 "${SCRIPT_DIR}/apply_booter_os_force_mbox.py" "${GSP_TU102_C_PREP}"
+    info "Applying optional Booter mbox 0xb forgive to kernel_gsp_booter_tu102.c..."
+    python3 "${SCRIPT_DIR}/apply_booter_mbox_forgive.py" "${GSP_BOOTER_TU102_C_PREP}"
+    fi
+    GSP_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
+    [[ -f "${GSP_C_PREP}" ]] || die "Missing ${GSP_C_PREP} after patching"
+    if [[ "${CMPUNLOCKER_PRODUCTION:-0}" != "1" ]]; then
+    info "Applying optional SEC2 DMA Step-0 probe to kernel_gsp.c + kernel_gsp_tu102.c..."
+    python3 "${SCRIPT_DIR}/apply_sec2_dma_probe.py" "${GSP_C_PREP}" "${GSP_TU102_C_PREP}"
+    ok "Debug instrumentation applied (RMCmpBooterDbg=1; RMCmpBooterImemDump=1; RMCmpSigDmemDump=1; RMCmpDmemSlotOff/Val; RMCmpBooterSkipApp=1; RMCmpBooterForceMbox0=1; RMCmpSec2DmaProbe=1)"
+    else
+    ok "Production build: probe/instrumentation generators skipped"
+    fi
 
     printf '%s\n' "${BUILD_STAMP}" > "${STAMP_FILE}"
 fi

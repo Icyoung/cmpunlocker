@@ -23,8 +23,7 @@ ANCHOR = (
 
 BLOCK = """
         /* cmpunlocker: log large PMA allocations with physical placement */
-        if ((NvU64)allocationCount * pageSize >= 0x10000ULL &&
-            pPages[0] >= 0x800000000ULL)   /* >=32G only: phantom-zone traffic */
+        if ((NvU64)allocationCount * pageSize >= 0x10000000ULL)   /* >=256MiB */
             NV_PRINTF(LEVEL_ERROR,
                       "CMP_PMA_ALLOC: count=%llu pageSize=0x%llx first=0x%llx last=0x%llx\\n",
                       (unsigned long long)allocationCount,

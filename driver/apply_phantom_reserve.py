@@ -11,10 +11,8 @@ Hook: end of memmgrCreateHeap_IMPL (mem_mgr.c), after the CMP diagnostic
 block, before the final return.  Idempotent via "CMP_MEM_RSV" marker.
 
 Current range: [0x900000000, 0xA3FFFFFFF) = [36 GiB, 41 GiB), a 5 GiB hole.
-History: [32,44) 12G → [36,44) 8G → [36,41) 5G (2026-08-08, behaviorally
-qualified: 72G drip/torture/verify all PASS).  The known-deadly structure
-sits at 40 GiB + 64 KiB; the 41G upper edge keeps ~0.94 GiB margin.
-If instability ever appears, revert to the 8G hole (see FIX_PLAN_RECLAIM.md).
+History: [32,44) 12G → [36,44) 8G → [36,41) 5G (2026-08-08) → back to 8G
+(same day: SM corruption at ~44.8G) → **5G again (2026-08-09)** for ~72G user heap.
 Runtime kill-switch: NVreg RMCmpPhantomReserve=0 disables the pin.
 """
 import pathlib
@@ -53,16 +51,14 @@ PIN = """
             memmgrIsPmaInitialized(pMemoryManager))
         {
             PMA *pRsvPma = pMemoryManager->pHeap->pPmaObject;
-            /* phantom hole EXPERIMENT: [36G, 41G) — 5G. The known-deadly
-             * structure sits at 40G+64K; upper edge 41G keeps ~0.94G margin.
-             * If stress passes, usable rises to ~74G; if GSP dies, revert to
-             * the qualified 8G hole [36G,44G). */
+            /* phantom hole: [36G, 41G) — 5G. Fatal structure at 40G+64K;
+             * upper edge 41G leaves ~0.94G margin (validated 2026-08-08). */
             if (pmaIsPmaManaged(pRsvPma, 0x900000000ULL, 0xA3FFFFFFFULL))
             {
                 pmaSetBlockStateAttrib(pRsvPma, 0x900000000ULL, 0x140000000ULL,
                                        STATE_PIN, STATE_MASK);
                 NV_PRINTF(LEVEL_ERROR,
-                          "CMP_MEM_RSV: pinned [0x900000000,0xa3fffffff] in PMA (phantom guard, 5G experiment)\\n");
+                          "CMP_MEM_RSV: pinned [0x900000000,0xa3ffffff] in PMA (phantom guard, 5G hole)\\n");
             }
             else
             {
@@ -94,6 +90,24 @@ ZERO_CHECK_NEW = (
     "        if (freeMem + cmpPhantomRsv != totalMem)\n"
 )
 
+# 8G hole → 5G hole upgrade tokens (2026-08-09)
+_UPGRADE_8G_TO_5G = (
+    ("0xAFFFFFFFULL", "0xA3FFFFFFFULL"),
+    ("0x200000000ULL", "0x140000000ULL"),
+    ("0xafffffff", "0xa3ffffff"),
+    ("phantom guard, 8G hole", "phantom guard, 5G hole"),
+    ("[36G, 44G)", "[36G, 41G)"),
+)
+
+
+def _upgrade_hole_size(txt: str) -> tuple[str, bool]:
+    changed = False
+    for old, new in _UPGRADE_8G_TO_5G:
+        if old in txt:
+            txt = txt.replace(old, new)
+            changed = True
+    return txt, changed
+
 
 def main():
     if len(sys.argv) != 2:
@@ -102,6 +116,12 @@ def main():
     src = pathlib.Path(sys.argv[1])
     txt = src.read_text(encoding="utf-8")
     changed = False
+
+    if "CMP_MEM_RSV" in txt:
+        txt, upgraded = _upgrade_hole_size(txt)
+        if upgraded:
+            changed = True
+            print("upgraded phantom hole 8G -> 5G [36G,41G)")
 
     # pin block
     if "CMP_MEM_RSV" not in txt:

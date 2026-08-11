@@ -59,8 +59,11 @@ This compiles the coherent 80GB values into the real driver path:
 `CFG1=0x02779000`, `LMR=0x0000028B`, and
 `fb_length=0x0000001400000000`. It is never selected automatically. On a mixed
 20c2+2082 system, 20c2 cards stay on 64GB while 2082 cards use the experimental
-80GB target. Capacity recognition alone does not establish workload stability;
-see [Experimental 80GB](docs/EXPERIMENTAL_80GB.md).
+80GB target. As of Aug 2026 the 80GB profile is production-validated **with the
+5G phantom reserve** (see below): gpu_burn 300s clean, 256K-context LLM inference
+working. Note the 40G fold wall: single allocations must stay below 40G —
+see [Final verdict on the 40G wall](docs/FINAL_VERDICT_40G_WALL.md) and
+[Experimental 80GB](docs/EXPERIMENTAL_80GB.md).
 
 ### WPR/PMA safety revision
 
@@ -102,11 +105,50 @@ state was cleared.
 |---|---|
 | Full SM compute throughput (SS0/SS1) | Working ✓ |
 | Memory geometry (64GB on 8GB cards, 40GB on 10GB cards) | Working ✓ |
-| Experimental 80GB geometry on 10GB cards | Opt-in; stability not established |
+| 80GB geometry on 10GB cards | Working ✓ (81920 MiB visible, 5G phantom reserve; ~40G contiguous safe region — see the 40G wall verdict below) |
 | PCIe Gen 2 speeds | Working ✓ |
+| PCIe Gen 3/4 | Not unlockable — blocked at fuse/PHY-cal layer (see verdict) |
 | JTAG (Host2Jtag register access) | Working ✓ |
 | WPR/PMA reserved-memory protection (`wpr-safe-r3`) | Working; old unsafe module rejected |
 | Persistence across reboot (patched modules) | Working ✓ |
+
+---
+
+## Research campaign (August 2026)
+
+A week-long deep investigation pushed the 10GB card to full 80GB geometry and then
+hunted the "40G wall" (writes above 40G fold back with a +35GiB alias) all the way
+to its root cause. Full archive: [docs/RESEARCH_INDEX.md](docs/RESEARCH_INDEX.md);
+final verdict: [docs/FINAL_VERDICT_40G_WALL.md](docs/FINAL_VERDICT_40G_WALL.md).
+
+**Milestones**
+
+- **Aug 6–8** — 80GB geometry unlock stabilized (81920 MiB in `nvidia-smi`), phantom-reserve
+  memory-safety scheme, full compute throughput restored (FP32 0.39 → 12.26 TFLOPS,
+  BF16 166 TFLOPS class).
+- **Aug 8–9** — The "32G/40G wall" discovered and independently re-confirmed; wall signature
+  fully decoded: +35GiB fold with a 256-byte-granular tail, 8G (HBM-die) periodicity
+  ([docs/WALL_ALIAS_DECODE.md](docs/WALL_ALIAS_DECODE.md)). Hole narrowed 8G→5G.
+- **Aug 10** — SEC2 post-authentication DMA injection platform built: runtime GSP-RM patching
+  in WPR, LEVEL2 (HS) register writes, VBIOS-table patch hooks — all without touching any
+  signature ([docs/PLAN_SEC2_DMA_POSTPATCH.md](docs/PLAN_SEC2_DMA_POSTPATCH.md)).
+- **Aug 10–11** — Systematic elimination of every software-reachable layer: all 9 writable FBPA
+  registers (single + combined writes, persistence-verified), 3 regkey reroutes, host-side
+  VBIOS table patching, VBIOS flashing risk analysis, and the WPR2 staging-window (R1) probe.
+  VBIOS table semantics cracked: the real CMP-vs-A100 delta is 19 per-partition dwords
+  (columns 7/8) selected by fused device-id inside the signed/encrypted FWSEC devinit ucode
+  ([docs/re/A100_40G_80G_COLUMN_DIFF.md](docs/re/A100_40G_80G_COLUMN_DIFF.md),
+  [docs/re/LATE_OVERRIDE_0294.md](docs/re/LATE_OVERRIDE_0294.md)).
+- **Aug 11 — Final verdict:** the 40G wall (and PCIe Gen3/4) is a fuse-selected, cryptographically
+  authenticated SKU decision; short of NVIDIA's signing key or fuse authority it is not
+  software-unlockable. Shipped production configuration: 80GB geometry + 5G phantom reserve,
+  validated end-to-end (gpu_burn 300s, 68GB occupied, 0 errors, zero Xid; llama 256K-context
+  inference working with KV cache placed below the fold).
+
+**Tooling left behind:** BAR0 MMIO read/write probes, wall/fold scanners and the alias decoder
+(`tools/`), the SEC2 probe generator framework (`driver/apply_sec2_dma_probe.py`), and 22
+reverse-engineering notes ([docs/re/](docs/re/)). Firmware binaries and disassembly are
+intentionally not published.
 
 ---
 
