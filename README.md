@@ -6,6 +6,33 @@ Unlock tool for the NVIDIA CMP 170HX (GA100) mining card. Restores full SM compu
 **[Join our Discord community](https://discord.gg/CdHSakKSFv)** for support and discussions.
 
 ---
+
+## CMP 170HX 10GB → 80GB: the full campaign, and the wall we hit 🧱
+
+This one was fought by an "AI fleet" — **GPT-5.6 Pro, Kimi K3** and other top-tier models running as a multi-agent team: dedicated agents for reverse engineering, firmware analysis, and live hardware experiments. A week of work, 60+ controlled experiments. This is the **80GB memory** story.
+
+**✅ What we achieved: 80GB geometry unlocked**
+`nvidia-smi` shows **81920 MiB**. The physical 80GB of HBM is confirmed present and addressable, and the card ran long-context LLM inference with our memory-safety scheme.
+
+**🧱 But there's a wall: the 40G fold**
+Writes above 40G (= 20 FBPA × 2G) **fold back to low addresses at a +35GiB offset** (256B-granular tail, 8G = HBM-die periodicity). We fully decoded the wall's signature first, ruled out page-table/driver-layer causes, and pinned it to the FBPA routing layer.
+
+**🔬 Then the hard part — exhausting every software path (each with hard evidence):**
+
+1. **SEC2 HS (LEVEL2) register writes** — reproduced the paper-grade primitive; all 9 writable FBPA registers, single *and* combined writes, persistence verified → wall unmoved
+2. **Regkey reroutes** (FBFLCN disable / engine switch / PMU) → all dead
+3. **Host-side VBIOS table patching** — we actually *won* the authentication bet (MAC-region edits are never re-verified on upload!), but FWSEC reads the table straight from the card's ROM; it never touches the host buffer → dead end
+4. **VBIOS flashing assessment** — 8-9/10 odds of MAC (RSA-3072) rejection + brick risk → rejected
+5. **WPR2 runtime patch (the last hope)** — built a SEC2 post-auth DMA injection platform to patch GSP-RM at runtime and rewrite FWSEC's staged table copy → the GSP-RM app layer has no memory window reaching that region; four anchor attempts, all severed
+
+**🎯 Root cause (a surprise payoff from the AI team's VBIOS table RE):**
+The real CMP-vs-A100 delta isn't at the register level — it's **19 per-partition dwords (columns 7/8) in the VBIOS devinit table**, selected by the fused device-id inside the **signed + encrypted FWSEC ucode running on SEC2**.
+
+**Final verdict:** the SKU boundary is an output of the silicon-anchored chain of trust — short of NVIDIA's signing key or fuse-burning authority, linear 80GB is not software-unlockable, period. We've nailed down the evidence at every layer, so nobody has to walk this maze again.
+
+Full docs, 22 RE notes, complete experiment log (v1–v64): [docs/FINAL_VERDICT_40G_WALL.md](docs/FINAL_VERDICT_40G_WALL.md) · [docs/RESEARCH_INDEX.md](docs/RESEARCH_INDEX.md)
+
+---
 ## Proof of Concept
 
 Below are memory and performance results after applying the unlock:
