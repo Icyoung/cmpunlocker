@@ -38,9 +38,13 @@
 
 ## 5. 生产配置(最终态)
 
+**2026-08-12 修订:生产推荐 = 40G profile(`--profile=10gb`)。** 80G 配置的安全可用池([5G,36G) ≈ 31-36 GiB,折叠落点区之下、洞之下)小于 40G profile 的干净 40960 MiB,且任何越过 36G 的分配都有折叠损坏风险——80G 配置保留为研究档案。v63 修复了 profile 混合 bug(early-write 块硬编码 80G 值不随 profile 走,导致 40G build 混合几何 wedge),40G 生产 build 已经 v64-acceptance 验收。
+
+80G 研究配置存档(v62-acceptance 验收过):
+
 - 驱动:610.43.02 干净 build(无探针日志),`CMPUNLOCKER_STRIP_POST0808=1 CMPUNLOCKER_CARD_PROFILE=10gb80`。
 - 显存:80G 可见 + phantom reserve 挖洞(GSP 元数据带 PMA pin [36G,41G) 5G,`driver/apply_phantom_reserve.py`)——洞的作用是防止用户分配踩进折叠区/元数据带,**从来没修过数据折叠**。
-- 有效可用显存:~75G 可见、~40G 连续安全区(40G 以上单对象不可用,洞下分配安全)。
+- 有效可用显存:81920 MiB 可见,安全池 [5G,36G);单对象必须落在洞下,>36G 对象有折叠风险,>40G 必然损坏。
 - regkey(仅 RegistryDwords,不落盘):`RmForceEnableGen2=1;RMPcieLinkSpeed=0x1;RMDisableScrubOnFree=1`。
 - 验收标准:v62-acceptance(nvidia-smi / SS0/SS1 / wall_reconfirm2 / vec_scan2 / gpu burn 5min / llama -c 262144)。
 

@@ -59,9 +59,14 @@ This compiles the coherent 80GB values into the real driver path:
 `CFG1=0x02779000`, `LMR=0x0000028B`, and
 `fb_length=0x0000001400000000`. It is never selected automatically. On a mixed
 20c2+2082 system, 20c2 cards stay on 64GB while 2082 cards use the experimental
-80GB target. As of Aug 2026 the 80GB profile is production-validated **with the
-5G phantom reserve** (see below): gpu_burn 300s clean, 256K-context LLM inference
-working. Note the 40G fold wall: single allocations must stay below 40G —
+80GB target.
+
+**Production recommendation (Aug 2026 verdict): use 40GB (`--profile=10gb`).**
+The 80GB profile is fully validated (gpu_burn 300s clean, 256K-context LLM
+inference working) but the 40G fold wall caps its *safely usable* pool at
+~31–36GiB ([5G,36G) between the fold-impact zone and the phantom-reserve hole),
+which is **less** than the clean 40GB profile — and any allocation crossing 36G
+risks silent fold corruption. The 80GB profile remains as a research artifact;
 see [Final verdict on the 40G wall](docs/FINAL_VERDICT_40G_WALL.md) and
 [Experimental 80GB](docs/EXPERIMENTAL_80GB.md).
 
@@ -105,7 +110,7 @@ state was cleared.
 |---|---|
 | Full SM compute throughput (SS0/SS1) | Working ✓ |
 | Memory geometry (64GB on 8GB cards, 40GB on 10GB cards) | Working ✓ |
-| 80GB geometry on 10GB cards | Working ✓ (81920 MiB visible, 5G phantom reserve; ~40G contiguous safe region — see the 40G wall verdict below) |
+| 80GB geometry on 10GB cards | Working ✓ but **40GB recommended for production** — the 40G fold wall caps 80G's safe pool below the 40G profile's (see verdict below) |
 | PCIe Gen 2 speeds | Working ✓ |
 | PCIe Gen 3/4 | Not unlockable — blocked at fuse/PHY-cal layer (see verdict) |
 | JTAG (Host2Jtag register access) | Working ✓ |
