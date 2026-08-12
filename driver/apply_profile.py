@@ -9,6 +9,16 @@ This helper selects only the 10 GB card (2082) target:
 
 It rewrites the actual C constants that are compiled into nvidia.ko. Metadata files
 such as common/constants.yaml are deliberately not treated as build inputs.
+
+Two geometry blocks in the patched kernel_gsp.c are rewritten together so the
+whole boot path agrees on one geometry:
+
+- the R3 post-PLM write (sec2-postbl-plm-ss-cfg.patch, cfg1Value/lmrValue);
+- the P1a early write before the first WPR-meta populate
+  (early-lmr-write-p1a.patch, cfg1Target/lmrTarget).  If the P1a block keeps
+  different constants than the selected profile, the booter loop latches one
+  geometry while the compiled fb_length says another and the boot wedges
+  (2026-08-12 incident: 10gb profile shipped hardcoded 80 GiB P1a targets).
 """
 
 from __future__ import annotations
@@ -90,6 +100,28 @@ FB_BYTES_RE = re.compile(
     re.MULTILINE,
 )
 
+# The P1a early-write block (early-lmr-write-p1a.patch) has the same
+# dual-device shape but different variable names (cfg1Target/lmrTarget) and
+# runs before the first kgspPopulateWprMeta_HAL.  It is rewritten with the
+# same geometry as the post-PLM block above.  Only matched when the P1a patch
+# is present in the tree (marker: CMP_MEM_EARLY_WRITE).
+EARLY_WRITE_BLOCK_RE = re.compile(
+    r"(?P<prefix>"
+    r"if\s*\(devId\s*==\s*SEC2_POSTBL_TIMING_CMP_170HX_8GB_PCI_DEVICE_ID\)\s*"
+    r"\{\s*"
+    r"cfg1Target\s*=\s*0x02779000U;\s*"
+    r"lmrTarget\s*=\s*0x0000020BU;\s*"
+    r"\}\s*"
+    r"else\s*"
+    r"\{\s*"
+    r"cfg1Target\s*=\s*)"
+    r"0x[0-9A-Fa-f]+U;"
+    r"(?P<middle>\s*lmrTarget\s*=\s*)"
+    r"0x[0-9A-Fa-f]+U;"
+    r"(?P<suffix>\s*\})",
+    re.MULTILINE,
+)
+
 
 def replace_exactly_once(
     pattern: re.Pattern[str], text: str, replacement: str, name: str
@@ -123,6 +155,18 @@ def apply_profile(source: pathlib.Path, profile: str) -> Geometry:
         "10 GB framebuffer length",
     )
 
+    # P1a early-write block: same geometry, or the booter loop latches a
+    # different fbSize than the compiled constants (fail closed if the patch
+    # marker is present but the block does not match exactly once).
+    has_early_write = "CMP_MEM_EARLY_WRITE" in text
+    if has_early_write:
+        text = replace_exactly_once(
+            EARLY_WRITE_BLOCK_RE,
+            text,
+            rf"\g<prefix>{geometry.cfg1}U;\g<middle>{geometry.lmr}U;\g<suffix>",
+            "10 GB early-write CFG1/LMR",
+        )
+
     # Fail closed if the fixed 8 GB geometry or selected 10 GB geometry is not
     # present exactly as expected after rewriting.
     required = {
@@ -133,6 +177,11 @@ def apply_profile(source: pathlib.Path, profile: str) -> Geometry:
         "10 GB LMR": f"lmrValue  = {geometry.lmr}U;",
         "10 GB framebuffer": f": {geometry.fb_bytes}ULL;",
     }
+    if has_early_write:
+        required["early-write 8 GB CFG1"] = "cfg1Target = 0x02779000U;"
+        required["early-write 8 GB LMR"] = "lmrTarget  = 0x0000020BU;"
+        required["early-write 10 GB CFG1"] = f"cfg1Target = {geometry.cfg1}U;"
+        required["early-write 10 GB LMR"] = f"lmrTarget  = {geometry.lmr}U;"
     missing = [name for name, marker in required.items() if marker not in text]
     if missing:
         raise RuntimeError(f"profile verification failed; missing: {', '.join(missing)}")

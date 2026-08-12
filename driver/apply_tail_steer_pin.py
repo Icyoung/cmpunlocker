@@ -9,11 +9,21 @@ shrinking client capacity via a premature tail pin.
 Mid phantom hole (CMP_MEM_RSV) stays until P3.
 
 Idempotent via CMP_TAIL_PIN marker.
+
+Profile gating (2026-08-12): both anchors live in text inserted by
+apply_phantom_reserve.py, and the hardcoded corridor end (0x13f410ffff) is an
+80G-layout address, so this pin only exists for profiles whose 2082 heap
+exceeds 40 GiB (10gb64/10gb80/mixed80).  build.sh passes --profile; for the
+stable 40 GiB profile (8gb/10gb/mixed) this script is a no-op.
 """
 from __future__ import annotations
 
+import argparse
 import pathlib
 import sys
+
+# Same gate as apply_phantom_reserve.py: profiles whose 2082 heap exceeds 40 GiB.
+PINNED_PROFILES = {"10gb64", "10gb80", "mixed80"}
 
 MARKER = "CMP_TAIL_PIN"
 
@@ -152,10 +162,24 @@ PIN_LEGACY_READ = (
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} <mem_mgr.c>", file=sys.stderr)
-        return 2
-    path = pathlib.Path(sys.argv[1])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source", type=pathlib.Path, help="path/to/mem_mgr.c")
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="card profile; the tail pin only exists for profiles whose "
+        "2082 heap exceeds 40 GiB (its anchors come from the phantom reserve)",
+    )
+    args = parser.parse_args()
+
+    if args.profile is not None and args.profile not in PINNED_PROFILES:
+        print(
+            f"profile {args.profile}: no phantom reserve / 80G tail corridor — "
+            "skipping tail-steer host pin"
+        )
+        return 0
+
+    path = args.source
     text = path.read_text(encoding="utf-8")
     changed = False
 

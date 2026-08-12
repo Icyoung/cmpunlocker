@@ -64,3 +64,12 @@
 | XP 基址常量(0x88000/0x8a000/0x8c000) | 零命中 |
 | GSP-RM RmForceEnableGen2 消费方 | 不存在(host 侧 regkey) |
 | GSP-RM Gen3 条件分支/fuse 检查 | 不存在(能力来自硬件 LNKCAP 缓存) |
+
+## 附录:第三方互证(2026-08-12)
+
+社区指南 [abobasixseven/unlock-cmp-170hx](https://github.com/abobasixseven/unlock-cmp-170hx)(基于 amoghmunikote 6 补丁 + bendy2 0007-pcie-gen2)独立给出同一结论:**Gen2 是软件天花板,Gen3/Gen4 被 OTP fuse 封锁,无软件路径**。互证要点:
+
+- **fuse 命名**:`FUSE_PCIE_GEN23_DIS`(我们此前只有机制描述);Gen2 可解是因为 OPT_GEN23(0x82057c,fuse shadow)可经 SEC2 Booter 写 0——shadow 可写 ⇒ fuse 仅 advisory,与本项目 HS 写 shadow 寄存器的实证一致;Gen3 需要 PHY 校准路径,shadow 层无解。
+- **Gen2 完整寄存器序列**(22 个 PLM + CYA_0 DIS_G2 + LINK_CONFIG_0 MAX_RATE + late retrain)与本仓库 `driver/patches/pcie-gen2.patch` + `tools/retrain.sh` 同源,双方独立可用。
+- 工程现象互证:PLM-open 与 GSP-RM 同周期启动冲突、mailbox 0x31/0x47、60s 断电要求,两方观察一致。
+- 该指南 10G 卡仅使用上游 40G profile,未尝试 80G,未触及折叠墙;墙的刻画与根因(FWSEC fuse 选行、列 7/8)为本项目独有产出,见 `../FINAL_VERDICT_40G_WALL.md`。

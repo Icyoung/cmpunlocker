@@ -10,13 +10,26 @@ the pages that host the GSP-owned phantom structures.
 Hook: end of memmgrCreateHeap_IMPL (mem_mgr.c), after the CMP diagnostic
 block, before the final return.  Idempotent via "CMP_MEM_RSV" marker.
 
+Profile gating (2026-08-12): the phantom structure sits at 40 GiB + 64 KiB,
+so only profiles whose 2082 heap extends past 40 GiB (10gb64, 10gb80,
+mixed80) need the pin.  For the stable 40 GiB profile (8gb/10gb/mixed) the
+structure is above the heap top and this script is a no-op — previously the
+pin + MIG tolerance were applied unconditionally, which both stole 4 GiB of
+the 40 GiB heap and broke the MIG zero-usage check when the pin was not
+PMA-managed.  build.sh passes --profile; without it the legacy behavior
+(apply) is kept for manual/dev use.
+
 Current range: [0x900000000, 0xA3FFFFFFF) = [36 GiB, 41 GiB), a 5 GiB hole.
 History: [32,44) 12G → [36,44) 8G → [36,41) 5G (2026-08-08) → back to 8G
 (same day: SM corruption at ~44.8G) → **5G again (2026-08-09)** for ~72G user heap.
 Runtime kill-switch: NVreg RMCmpPhantomReserve=0 disables the pin.
 """
+import argparse
 import pathlib
 import sys
+
+# Profiles whose 2082 heap covers the phantom structure at 40 GiB + 64 KiB.
+PINNED_PROFILES = {"10gb64", "10gb80", "mixed80"}
 
 ANCHOR = (
     '                          pmaWprOverlapCount);\n'
@@ -110,10 +123,24 @@ def _upgrade_hole_size(txt: str) -> tuple[str, bool]:
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("usage: apply_phantom_reserve.py <path/to/mem_mgr.c>", file=sys.stderr)
-        return 2
-    src = pathlib.Path(sys.argv[1])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source", type=pathlib.Path, help="path/to/mem_mgr.c")
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="card profile (8gb/10gb/mixed/10gb64/10gb80/mixed80); "
+        "the pin is only applied for profiles whose 2082 heap exceeds 40 GiB",
+    )
+    args = parser.parse_args()
+
+    if args.profile is not None and args.profile not in PINNED_PROFILES:
+        print(
+            f"profile {args.profile}: 2082 heap is 40 GiB, phantom structure "
+            "(40 GiB + 64 KiB) is above the heap top — skipping pin"
+        )
+        return 0
+
+    src = args.source
     txt = src.read_text(encoding="utf-8")
     changed = False
 

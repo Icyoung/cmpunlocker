@@ -158,12 +158,14 @@ else
     fi
 
     # Phantom guard: pin the GSP-metadata collision zone out of the PMA.
-    # No-op on non-0x2082 cards and on profiles whose heap does not cover it.
+    # Only applied for profiles whose 2082 heap exceeds 40 GiB (the phantom
+    # structure lives at 40 GiB + 64 KiB); a no-op for the stable 40 GiB
+    # profile and on non-0x2082 cards.
     MEM_MGR_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c"
     [[ -f "${MEM_MGR_C_PREP}" ]] || die "Missing ${MEM_MGR_C_PREP} after patching"
     info "Applying phantom reserve (PMA pin) to mem_mgr.c..."
-    python3 "${SCRIPT_DIR}/apply_phantom_reserve.py" "${MEM_MGR_C_PREP}"
-    ok "Phantom reserve applied"
+    python3 "${SCRIPT_DIR}/apply_phantom_reserve.py" "${MEM_MGR_C_PREP}" --profile "${PROFILE}"
+    ok "Phantom reserve applied (profile ${PROFILE})"
 
     # Tail-steer (P0/P1): log regionTag; optionally squeeze GSP PMA free space
     # into a FB-tail corridor (RMCmpTailSteer=1) and pin that corridor on host.
@@ -174,7 +176,7 @@ else
     info "Applying tail-steer host-free reopen to mem_mgr_gsp_client.c..."
     python3 "${SCRIPT_DIR}/apply_tail_steer_host_free.py" "${GSP_CLIENT_C_PREP}"
     info "Applying optional tail-steer host pin to mem_mgr.c..."
-    python3 "${SCRIPT_DIR}/apply_tail_steer_pin.py" "${MEM_MGR_C_PREP}"
+    python3 "${SCRIPT_DIR}/apply_tail_steer_pin.py" "${MEM_MGR_C_PREP}" --profile "${PROFILE}"
     ok "Tail-steer helpers applied (RMCmpTailSteer=1; host-free reopen; RMCmpTailPin optional)"
 
     GSP_TU102_C_PREP="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c"

@@ -1,16 +1,20 @@
 --- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
 +++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
-@@ -4891,6 +4891,50 @@
+@@ -4891,6 +4891,54 @@
                    "WPR2 already up before GSP boot; continuing for recovery\n");
      }
  
 +    //
 +    // cmpunlocker P1a: EARLY LMR/CFG1 write so kgspPopulateWprMeta_HAL reads
-+    // the unlocked fbSize (80 GiB) rather than the stock 10 GiB.  Without this,
++    // the unlocked fbSize rather than the stock 10 GiB.  Without this,
 +    // WPR meta seen by the booter loop encodes only 10 GiB; even though R3
-+    // re-populates to 80 GiB after the booter loop, internal GSP tables built
-+    // during booter+bootstrap remain sized for 10 GiB and any access above
-+    // ~40 GiB crashes GSP with Xid 1 illegal instruction @ pc:0x5b2b940.
++    // re-populates to the unlocked size after the booter loop, internal GSP
++    // tables built during booter+bootstrap remain sized for 10 GiB and any
++    // access above ~40 GiB crashes GSP with Xid 1 illegal instruction.
++    //
++    // The 2082 targets below are SHIPPED DEFAULTS for the stable 40 GiB
++    // profile; apply_profile.py rewrites them per CMPUNLOCKER_CARD_PROFILE
++    // (40 GiB stable / 80 GiB experimental), same as the post-PLM block.
 +    //
 +    // These writes may fail silently if the required PLMs are still closed at
 +    // this point; if so the values will be re-written by the existing PLM open
@@ -30,8 +34,8 @@
 +        }
 +        else
 +        {
-+            cfg1Target = 0x02779000U;
-+            lmrTarget  = 0x0000028BU;
++            cfg1Target = 0x02669000U;
++            lmrTarget  = 0x0000028AU;
 +        }
 +
 +        cfg1Before = GPU_REG_RD32(pGpu, CMP_MEM_CFG1_BCAST);
