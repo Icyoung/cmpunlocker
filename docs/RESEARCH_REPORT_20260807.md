@@ -173,7 +173,9 @@ Patches in `driver/build.sh` order:
 
 1. `sec2-postbl-plm-ss-cfg.patch` — huge patch. The exploit that opens the 11 PLMs by refilling a payload buffer inside the booter's signature memdesc and running booter 22 times. Then writes `CFG1_BCAST` and `LMR`. Then does a second `kgspPopulateWprMeta_HAL` so `pWprMeta->fbSize` reflects the new LMR.
 2. `booter-verify.patch` — SEC2/booter signature verification tweaks.
-3. `memory-layout-safety.patch` — diagnostic prints of the memory layout; **does not** register any additional PMA regions (that's what the old, removed `late-pma.patch` did, unsafely).
+3. `memory-layout-safety.patch` — keeps the CMP CE virtual-mode workaround and
+   adds no runtime memory-layout diagnostics or additional PMA regions (the old,
+   removed `late-pma.patch` did the latter unsafely).
 4. `bar0-pramin-clamp.patch` — clamp BAR0 PRAMIN operations to the pre-unlock region.
 5. `ce-scrub-workarounds.patch` — forces `memmgrGetPteKindForScrubber_TU102` to return `NV_MMU_PTE_KIND_GENERIC_MEMORY` on `0x20C2/0x2082`, and disables CeUtils VIRTUAL_MODE for the scrubber's own allocations on those PCI IDs. **Only scrubber allocations** — see R4 for why user-side extension didn't help.
 6. `early-lmr-write-p1a.patch` — **new this session, does not fix the bug** (register writes rejected by PLM). Kept in tree for diagnostic value; consider removing.
@@ -433,4 +435,3 @@ The GSP crash at `pMemMgr->vtable[0x120]` is a downstream effect: the memsys obj
 | B7 | + FEAT-restore | 96.23 s (only FEAT08 accepted) | Xid 1 @ pc:0x5b2b940 |
 
 Seven 10 GB card boots, identical crash to millisecond precision.
-

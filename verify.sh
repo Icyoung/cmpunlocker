@@ -100,10 +100,7 @@ if grep -aFq 'SEC2_DEBUG_LATE_PMA:' "${CORE_MODULE}" ||
    grep -aFq 'memmgrSec2DebugLateExtendHighPmaRegion' "${CORE_MODULE}"; then
     die "Installed nvidia.ko still contains the unsafe late-PMA extension; do not stress the GPU"
 fi
-if ! grep -aFq 'CMP_MEM_SAFE_PMA: revision=wpr-safe-r3' "${CORE_MODULE}"; then
-    die "Installed nvidia.ko lacks the wpr-safe-r3 marker; rebuild and cold reboot"
-fi
-ok "Installed nvidia.ko contains wpr-safe-r3 and no late-PMA extension marker"
+ok "Installed nvidia.ko has no late-PMA extension marker"
 
 running_src="$(cat /sys/module/nvidia/srcversion 2>/dev/null || true)"
 installed_src="$(modinfo -F srcversion "${CORE_MODULE}" 2>/dev/null || true)"
@@ -121,49 +118,17 @@ if [[ -n "${resolved_module}" && "${resolved_module}" != *"/updates/cmpunlocker/
     die "modprobe resolves nvidia to ${resolved_module}, not the cmpunlocker safety build"
 fi
 
-if [[ -r "${INSTALL_MOD_DIR}/safety_revision" ]]; then
-    revision="$(cat "${INSTALL_MOD_DIR}/safety_revision")"
-    [[ "${revision}" == "wpr-safe-r3" ]] || die "Unexpected safety revision: ${revision}"
-    ok "Installed safety revision: ${revision}"
-else
-    warn "safety_revision metadata is missing; module binary marker is authoritative"
-fi
+[[ -r "${INSTALL_MOD_DIR}/safety_revision" ]] ||
+    die "Safety revision metadata is missing: ${INSTALL_MOD_DIR}/safety_revision"
+revision="$(cat "${INSTALL_MOD_DIR}/safety_revision")"
+[[ "${revision}" == "wpr-safe-r3" ]] || die "Unexpected safety revision: ${revision}"
+ok "Installed safety revision: ${revision}"
 
 unsafe_boot_logs="$(dmesg 2>/dev/null | grep -E 'SEC2_DEBUG_LATE_PMA:|late PMA extension status=' || true)"
 if [[ -n "${unsafe_boot_logs}" ]]; then
     printf '%s\n' "${unsafe_boot_logs}" | tail -n 20 | sed 's/^/  /'
     die "Current boot executed the removed late-PMA extension; cold reboot into the new module before testing"
 fi
-safe_pma_logs="$(dmesg 2>/dev/null | grep 'CMP_MEM_SAFE_PMA: revision=wpr-safe-r3' || true)"
-latest_safe_pma="$(printf '%s\n' "${safe_pma_logs}" | tail -n 1)"
-if [[ -n "${latest_safe_pma}" ]]; then
-    [[ "${latest_safe_pma}" == *"late_extension=disabled"* ]] ||
-        die "Current boot safety line does not confirm late_extension=disabled"
-    ok "Current boot logged diagnostic-only WPR/PMA handling"
-    printf '%s\n' "${latest_safe_pma}" | sed 's/^/  /'
-
-    if [[ "${latest_safe_pma}" != *"pmaReady=1"* ||
-          "${latest_safe_pma}" != *"pmaRegionStatus=0x0"* ||
-          "${latest_safe_pma}" != *"wprAvailable=1"* ]]; then
-        if [[ "${INSTALLED_PROFILE}" == "10gb80" || "${INSTALLED_PROFILE}" == "mixed80" ]]; then
-            die "80GB stress gate failed: PMA/WPR diagnostics are incomplete"
-        fi
-        warn "PMA/WPR diagnostics are incomplete; save a diagnostic bundle before testing"
-    fi
-
-    if [[ "${latest_safe_pma}" =~ wprDescriptorCovers=([0-9]+) ]]; then
-        info "WPR address covered by a PMA descriptor: ${BASH_REMATCH[1]} (diagnostic only; pinned/reserved pages may still be unavailable)"
-    fi
-    if [[ "${latest_safe_pma}" =~ pmaWprOverlapCount=([0-9]+) ]]; then
-        info "PMA region descriptors overlapping WPR: ${BASH_REMATCH[1]} (inspect reservation logs if non-zero)"
-    fi
-else
-    if [[ "${INSTALLED_PROFILE}" == "10gb80" || "${INSTALLED_PROFILE}" == "mixed80" ]]; then
-        die "80GB stress gate failed: no current-boot wpr-safe-r3 PMA diagnostic line; cold reboot or collect as root"
-    fi
-    warn "No current-boot CMP_MEM_SAFE_PMA line retained; collect diagnostics before stress testing"
-fi
-
 step "Checking memory unlock status"
 failures=0
 printf "\n%-16s %-8s %-8s %-12s %-12s %s\n" "BDF" "PCI ID" "Variant" "Expect" "Actual" "Status"

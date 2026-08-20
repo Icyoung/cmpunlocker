@@ -26,16 +26,18 @@ Run:
 sudo ./verify.sh
 ```
 
-The installed core module must contain `CMP_MEM_SAFE_PMA` and must not contain
-`SEC2_DEBUG_LATE_PMA`. The current boot must also have no `late PMA extension
-status` or `SEC2_DEBUG_LATE_PMA: registering` line. `verify.sh` fails closed if
-any of these checks indicate the old module is active.
+The installed core module must not contain `SEC2_DEBUG_LATE_PMA` or
+`memmgrSec2DebugLateExtendHighPmaRegion`. The installed safety metadata must
+read `wpr-safe-r3`, and the current boot must have no `late PMA extension status`
+or `SEC2_DEBUG_LATE_PMA: registering` line. `verify.sh` fails closed if any of
+these checks indicate the old module is active.
 
 Useful manual checks:
 
 ```bash
 strings /lib/modules/$(uname -r)/updates/cmpunlocker/nvidia.ko \
-  | grep -E 'CMP_MEM_SAFE_PMA|SEC2_DEBUG_LATE_PMA'
+  | grep -E 'SEC2_DEBUG_LATE_PMA|memmgrSec2DebugLateExtendHighPmaRegion'
+cat /lib/modules/$(uname -r)/updates/cmpunlocker/safety_revision
 sudo dmesg | grep -E 'CMP_MEM_|SEC2_DEBUG|Xid|UVM|GSP'
 ```
 
@@ -57,8 +59,6 @@ telemetry, process state, workload output, and pre/post diagnostic bundles. The
 collector wraps `nvidia-smi` in timeouts, so final collection does not wait
 indefinitely on an unresponsive GPU.
 
-`pmaDescriptorCovers=1` or `overlapsWpr=1` in a diagnostic line is not by itself
-a failure: a broad PMA region descriptor may contain pages that remain pinned.
 The safety property is that cmpunlocker no longer performs a late
 `pmaRegisterRegion()` or clears reserved-region flags.
 

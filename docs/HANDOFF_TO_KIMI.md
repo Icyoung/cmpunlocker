@@ -18,7 +18,7 @@ Ten patches, applied in `driver/build.sh` order. Skim these before doing anythin
 
 - **`sec2-postbl-plm-ss-cfg.patch`** — the load-bearing patch. Uses a SEC2 booter exploit: refills the booter's signature memdesc with a small payload that opens 11 PLMs (`WPR_CFG, FBPA, WPR, FEAT, XVE×3, FEAT2, OPT_PLM, PJTAG×2`), then writes `SS0/SS1/CFG1/LMR` from the host, then calls `kgspPopulateWprMeta_HAL` a second time so `pWprMeta->fbSize` picks up the new `LMR` value. `apply_profile.py` rewrites compile-time constants in the built `kernel_gsp.c` (target FB bytes, CFG1, LMR) based on `$CMPUNLOCKER_CARD_PROFILE`.
 - `ce-scrub-workarounds.patch` — forces scrubber's `memmgrGetPteKindForScrubber_TU102` to return `NV_MMU_PTE_KIND_GENERIC_MEMORY` for PCI IDs 0x20C2/0x2082; disables CeUtils VIRTUAL_MODE for the scrubber's own allocations on those IDs.
-- `memory-layout-safety.patch` — diagnostic prints only. Positive marker `CMP_MEM_SAFE_PMA: revision=wpr-safe-r3` guards the built module. Does **not** register additional PMA regions (that was the pulled r1 late-PMA experiment).
+- `memory-layout-safety.patch` — keeps the CMP CE virtual-mode workaround and does **not** register additional PMA regions (that was the pulled r1 late-PMA experiment). The build records `safety_revision=wpr-safe-r3` and rejects the old late-PMA symbols.
 - `bar0-pramin-clamp.patch`, `booter-verify.patch`, `persistent-sw-state.patch`, `pcie-gen2.patch`, `pcie-gen2-probe-retrain.patch`, `name-string.patch` — support patches, less relevant.
 
 ## The failure mode, exactly
@@ -398,11 +398,17 @@ Same-boot: `sm_vs_ce` (60 G alloc, CE memset high 20 G, SM verify) PASSED histor
 
 **Do it.** The self-locating pattern (each 8-byte word encodes its own offset, `0b110` low bits force misaligned to force mcause=4) is the right shape — it turns the crash log into a direct read-out of "where in user space did GSP find that pointer field." Once you have the offset:
 
-1. Cross-reference against `dmesg | grep CMP_MEM_REGION` (R3's `memmgrCreateHeap_IMPL` prints all 7 heap regions with `base=`/`limit=`).
+1. Cross-reference against the normal RM/GSP memory logs and the workload's Xid/GSP failure point; the current safety patch does not add a custom region dump.
 2. The offset should fall inside PMA client region (idx=1 in R3, `base=0x14100000..limit=0x13e6bfffff` on the 10G card per an earlier dmesg).
 3. Compare against WPR (idx=6, `overlapsWpr=1`) and GSP heap area — if the phantom struct is a GSP-internal thing but its physical page snuck into PMA client space, the fix is to shrink PMA at the specific range.
 
-R3 already has `memory-layout-safety.patch` which is the "we pulled late-pma-r1 for exactly this reason" patch — it prints diagnostics but doesn't add reservations. Your fix is likely a new **`pma-carve-out-r5.patch`** that inserts a PMA `blackList` entry (or shrinks region-1's limit) covering the identified page(s). See `memmgrPmaRegisterRegions_IMPL` and `pmaRegionAllocate_IMPL` in the R3 build tree for the shape.
+R3's former `memory-layout-safety.patch` printed diagnostics but did not add
+reservations. The current patch no longer adds that runtime inspection; it still
+does not register additional PMA regions. A real carve-out would need a separate
+**`pma-carve-out-r5.patch`** that inserts a PMA `blackList` entry (or shrinks
+region-1's limit) covering the identified page(s). See
+`memmgrPmaRegisterRegions_IMPL` and `pmaRegionAllocate_IMPL` in the R3 build tree
+for the shape.
 
 ## User posture (unchanged from top of file)
 
@@ -485,7 +491,6 @@ Three flavors of pointer corruption in the same struct family. **Consistent with
 
 - `~/f0/f0_slow_drip.cu` (yours) — good, keep.
 - `~/f0/f0_alias_probe.cu` (mine) — useful as a fast health check between experiments.
-- All R3 diagnostic prints (`CMP_MEM_REGION`, `CMP_MEM_GEOMETRY`, `CMP_MEM_WPR`) — invaluable for reading the layout after each carve-out iteration.
+- Older R3 diagnostic-print builds (`CMP_MEM_REGION`, `CMP_MEM_GEOMETRY`, `CMP_MEM_WPR`) remain historical experiment artifacts; they are not part of the current safety patch.
 
 Ping back if any of B/C move the needle, or if H-A iteration converges. If both B and C are no-ops and iterated carve-outs stop moving the crash point after a few rounds, we're probably looking at multiple struct families and the right fix is `bPmaManagedPtables = NV_FALSE` at source level.
-

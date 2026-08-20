@@ -263,9 +263,6 @@ if grep -R -Fq 'memmgrSec2DebugLateExtendHighPmaRegion' \
         "${SRC_DIR}/src/nvidia" "${SRC_DIR}/kernel-open" 2>/dev/null; then
     die "Prepared NVIDIA source still contains the removed late-PMA extension"
 fi
-if ! grep -Fq 'CMP_MEM_SAFE_PMA: revision=wpr-safe-r3' "${MEM_MGR_C}"; then
-    die "Patched mem_mgr.c lacks the ${SAFETY_REVISION} diagnostic marker"
-fi
 ok "Source safety gate passed: no reserved-region late registration"
 
 cd "${SRC_DIR}"
@@ -310,8 +307,8 @@ mapfile -t KO_FILES < <(find "${SRC_DIR}" -type f \( \
 [[ ${#KO_FILES[@]} -gt 0 ]] || die "No built nvidia*.ko found"
 
 # Refuse to install a module that still contains the known WPR-corrupting
-# late-PMA path.  The positive marker also prevents accidentally reusing an
-# old cached module that predates this safety revision.
+# late-PMA path.  The safety revision is recorded separately below so the
+# module no longer needs to carry runtime diagnostic strings.
 validated_core=0
 for ko in "${KO_FILES[@]}"; do
     if [[ "$(basename "${ko}")" != "nvidia.ko" ]]; then
@@ -320,9 +317,6 @@ for ko in "${KO_FILES[@]}"; do
     if grep -aFq 'SEC2_DEBUG_LATE_PMA:' "${ko}" ||
        grep -aFq 'memmgrSec2DebugLateExtendHighPmaRegion' "${ko}"; then
         die "Unsafe nvidia.ko contains the removed late-PMA extension path: ${ko}"
-    fi
-    if ! grep -aFq 'CMP_MEM_SAFE_PMA: revision=wpr-safe-r3' "${ko}"; then
-        die "nvidia.ko lacks the ${SAFETY_REVISION} safety marker: ${ko}"
     fi
     validated_core=$((validated_core + 1))
 done

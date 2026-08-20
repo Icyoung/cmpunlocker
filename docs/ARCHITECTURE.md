@@ -109,11 +109,8 @@ carveout and must never be returned to CUDA.
 - normal RM/PMA initialization decides which non-reserved regions are allocatable;
 - cmpunlocker never calls `pmaRegisterRegion()` on a `bRsvdRegion`;
 - cmpunlocker never clears `bRsvdRegion`, `rsvdSize`, or internal-heap flags;
-- post-initialization code is diagnostic-only and prints `CMP_MEM_REGION`,
-  `CMP_MEM_PMA_REGION`, and `CMP_MEM_SAFE_PMA` records without mutating
-  allocator state;
-- PMA descriptor coverage is logged for correlation, but is not treated as
-  proof that reserved/pinned pages are available to clients.
+- the build and verification gates reject the removed late-PMA extension symbols;
+- the installed `safety_revision` metadata records `wpr-safe-r3`.
 
 A previous experimental late-PMA extension violated this rule by registering the
 highest reserved region as public memory. On an 80GB profile that region
@@ -159,7 +156,7 @@ Host2Jtag register access is locked behind the same class of PLM permission as t
    - CFG1/LMR written (memory geometry)
    - SS0/SS1 written (compute state)
    - PCIe link retrained to Gen 2
-   - WPR/PMA ownership preserved; read-only layout diagnostics emitted
+   - WPR/PMA ownership preserved; no late-PMA extension is installed
 4. **GSP boot completes** → GPU is now fully unlocked
 5. **Driver ready** → `nvidia-smi` shows 65536 MiB (8GB), 40960 MiB (stable 10GB), or the explicitly selected experimental 80GB target at PCIe Gen 2, with JTAG register access available
 
