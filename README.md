@@ -142,6 +142,7 @@ state was cleared.
 | PCIe Gen 3/4 | Not unlockable — blocked at fuse/PHY-cal layer (see verdict) |
 | JTAG (Host2Jtag register access) | Working ✓ |
 | WPR/PMA reserved-memory protection (`wpr-safe-r3`) | Working; old unsafe module rejected |
+| CUDA PCIe P2P (kernel + GSP-RM + hardware mailbox) | Working ✓ for same-arch pairs (e.g. two CMP170HX); a cross-arch escape hatch is provided for test rigs — see [P2P verdict](docs/re/P2P_CROSSARCH_VERDICT.md) |
 | Persistence across reboot (patched modules) | Working ✓ |
 
 ---
