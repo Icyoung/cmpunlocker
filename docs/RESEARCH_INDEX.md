@@ -11,6 +11,7 @@
 | PCIe Gen1→Gen2 | ✅ 生产 regkey | fuse-shadow 路线 |
 | 40G 折叠墙 | ❌ 判定不可修(当前) | 根因=SEC2 加密 FWSEC + fuse 选行,见判词 |
 | PCIe Gen3/Gen4 | ❌ 同上同墙 | `re/PCIE_GEN3_RE.md` |
+| CUDA P2P(跨 arch 探路,同 arch 铺路) | ✅ kernel/GSP/硬件全通;跨 arch 剩 userland 一堵 | `re/P2P_CROSSARCH_VERDICT.md` |
 
 生产配方:干净 build(`CMPUNLOCKER_PRODUCTION=1`)+ 5G phantom reserve 洞(PMA pin [36G,41G))+ 标准 regkey;llama 256K 上下文可行(全对象须落洞下 [5G,36G),配方见 EXPERIMENTS v62)。
 
@@ -29,6 +30,7 @@
 - FB 路由与 VBIOS 表:`FB_ROUTING_RE.md`(GSP-RM 无 FB 路由代码的穷尽性证明)、`A100_80G_INIT_TABLE.md`、`A100_40G_80G_COLUMN_DIFF.md`(**列语义裁决:真杠杆=列 7/8 的 19 个 per-partition dword**)、`LATE_OVERRIDE_0294.md`(SKU 落地=FWSEC devinit 按 fuse 选行)、`V59_TABLE_PATCH.md`、`V59_UPLOAD_PATH.md`、`VBIOS_ROMS.md`、`VBIOS_FLASH_RISK.md`、`VBIOS_ECC_BBX.md`
 - R1(WPR2 窗口)侦察:`R1_WINDOW_RECON.md`、`R1_VA_WINDOW.md`
 - PCIe:`PCIE_GEN3_RE.md`
+- P2P(GPU 互联):`P2P_CROSSARCH_VERDICT.md`
 
 ## 工具资产
 

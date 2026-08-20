@@ -1,0 +1,48 @@
+--- a/src/nvidia/src/kernel/platform/p2p/p2p_caps.c
++++ b/src/nvidia/src/kernel/platform/p2p/p2p_caps.c
+@@ -38,6 +38,31 @@
+ #include "nvdevid.h"
+ 
+ ct_assert(NV2080_GET_P2P_CAPS_UUID_LEN == NV_GPU_UUID_LEN);
++
++/*
++ * cmpunlocker: RmForceCrossArchP2P regkey wrapper.
++ *
++ * Stock RM refuses PCIe P2P between GPUs of different arch/impl (see
++ * areGpusP2PCompatible below).  On CMP170HX (GA100) paired with a
++ * non-CMP peer of a different arch we bypass that check.
++ *
++ * The stock RMForceP2PType / ForceP2P regkeys only override the mailbox
++ * path selection and read/write cap bits.  They do not skip the arch
++ * match, so this is a distinct escape hatch.  Set via
++ *   NVreg_RegistryDwords="RmForceCrossArchP2P=1"
++ *
++ * NOTE: for same-arch pairs (e.g. two CMP170HX) this regkey is a no-op;
++ * the stock arch check already accepts them.
++ */
++static NvBool
++cmpunlockerForceCrossArchP2P(void)
++{
++    NvU32 data32 = 0;
++    if (osReadRegistryDword(NULL, "RmForceCrossArchP2P", &data32) == NV_OK &&
++        data32 != 0)
++        return NV_TRUE;
++    return NV_FALSE;
++}
+ 
+ /**
+  * @brief Determines if the GPUs are P2P compatible
+@@ -50,6 +75,13 @@
+ static NvBool
+ areGpusP2PCompatible(OBJGPU *pGpu0, OBJGPU *pGpu1)
+ {
++    // cmpunlocker: RmForceCrossArchP2P=1 bypasses the arch/impl match
++    // used for e.g. CMP170HX + non-CMP peer test rigs.
++    if (cmpunlockerForceCrossArchP2P())
++    {
++        return NV_TRUE;
++    }
++
+     // Mark GPUs of different arch or impl incapable of P2P over pcie
+     if ((gpuGetChipArch(pGpu0) != gpuGetChipArch(pGpu1)) ||
+         (gpuGetChipImpl(pGpu0) != gpuGetChipImpl(pGpu1)))

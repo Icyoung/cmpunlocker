@@ -62,6 +62,7 @@ PATCH_ORDER=(
     persistent-sw-state.patch
     pcie-gen2.patch
     pcie-gen2-probe-retrain.patch
+    p2p-enable-cross-arch.patch
     name-string.patch
 )
 PATCH_FILES=()
