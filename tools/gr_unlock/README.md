@@ -59,21 +59,37 @@ sudo ./install_gr_unlock.sh /path/to/NVIDIA-Linux-x86_64-610.43.02.run
 # 4. Reboot cleanly.
 ```
 
+In addition to the three RM byte patches above, `install_gr_unlock.sh`
+also flips two source-level defaults in the extracted driver tree so
+the patched CPU-side path is the one that actually runs at init:
+
+- `kernel/nvidia/nv-reg.h` — `EnableGpuFirmware` default is changed
+  from `NV_REG_ENABLE_GPU_FIRMWARE_DEFAULT_VALUE` (0x12, GSP on for
+  GA102) to `NV_REG_ENABLE_GPU_FIRMWARE_MODE_DISABLED` (0).  With
+  GSP on, GR-enable is decided by signed GSP-RM ucode on the card
+  and the .o_binary patch is a no-op.
+- `kernel/nvidia-drm/nvidia-drm-os-interface.c` —
+  `nv_drm_modeset_module_param` default is changed from `true` to
+  `false`, so nvidia-drm's atomic modeset does not take over the
+  init ordering the code cave hooks into.
+
+Both changes are guarded on exact-string matches against the 610.43.02
+sources; if NVIDIA ships different wording the installer aborts rather
+than silently skipping.
+
 ## After install: known caveats
 
-1. **`nvidia_drm.modeset` must be `N`.**
-   Check with:
+1. **`NVreg_EnableGpuFirmware=0` and `nvidia_drm.modeset=N` are now the
+   compile-time defaults.**  Verify after the driver loads:
    ```bash
-   cat /sys/module/nvidia_drm/parameters/modeset
+   cat /sys/module/nvidia/parameters/NVreg_EnableGpuFirmware   # expect 0
+   cat /sys/module/nvidia_drm/parameters/modeset               # expect N
    ```
-   Some distributions ship `nvidia-drm.modeset=1` in kernel cmdline or
-   modprobe.d; if this is set to `1`, the GR init path the patch hooks
-   into does not run and the unlock is a no-op.  Set it to `0` in
-   `/etc/modprobe.d/nvidia-drm-nomodeset.conf`:
-   ```
-   options nvidia_drm modeset=0
-   ```
-   and rebuild your initramfs.
+   Either default can still be overridden at load time by a
+   kernel-cmdline (`nvidia.NVreg_EnableGpuFirmware=1`,
+   `nvidia-drm.modeset=1`) or `/etc/modprobe.d/*` entry.  If a distro
+   ships one of those, remove it and rebuild the initramfs; otherwise
+   the GR unlock is a no-op.
 
 2. **Do not mix with the main cmpunlocker driver.**
    The main cmpunlocker path uses `nvidia-open` (open-gpu-kernel-modules)
